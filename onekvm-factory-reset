@@ -1,0 +1,22 @@
+#!/bin/sh
+set -eu
+
+reboot_after=true
+case "${1:-}" in
+    '') ;;
+    --no-reboot) reboot_after=false ;;
+    *) echo "usage: onekvm-factory-reset [--no-reboot]" >&2; exit 2 ;;
+esac
+
+[ "$(id -u)" -eq 0 ] || { echo "onekvm-factory-reset must run as root" >&2; exit 1; }
+mountpoint -q /boot || { echo "/boot is not mounted" >&2; exit 1; }
+
+touch /boot/onekvm-factory-reset
+sync
+echo "OneKVM factory reset requested"
+
+if [ "$reboot_after" = true ]; then
+    # Let this oneshot finish before the shutdown transaction begins, so its
+    # systemd job is reported as completed instead of canceled.
+    systemctl start --no-block onekvm-reboot.timer
+fi

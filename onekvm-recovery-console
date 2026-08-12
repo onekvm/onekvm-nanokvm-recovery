@@ -1,0 +1,57 @@
+#!/bin/sh
+
+sd_read_sectors=0
+sd_write_sectors=0
+if [ -r /sys/class/block/mmcblk0/stat ]; then
+    read -r read_ios read_merges sd_read_sectors read_ms \
+        write_ios write_merges sd_write_sectors write_ms rest \
+        </sys/class/block/mmcblk0/stat
+fi
+
+render_status() {
+    mem_total=0
+    mem_available=0
+    while read -r name value unit; do
+        case "$name" in
+            MemTotal:) mem_total=$value ;;
+            MemAvailable:) mem_available=$value ;;
+        esac
+    done </proc/meminfo
+    mem_used=$(((mem_total - mem_available) / 1024))
+    mem_total=$((mem_total / 1024))
+
+    read -r load rest </proc/loadavg
+    read -r uptime rest </proc/uptime
+    uptime=${uptime%%.*}
+    uptime=$((uptime / 60))
+
+    disk='SD unavailable'
+    if [ -r /sys/class/block/mmcblk0/size ]; then
+        read -r sectors </sys/class/block/mmcblk0/size
+        size_tenths=$((sectors * 5 / 1048576))
+        read -r read_ios read_merges read_sectors read_ms \
+            write_ios write_merges write_sectors write_ms rest \
+            </sys/class/block/mmcblk0/stat
+        read_rate=$(((read_sectors - sd_read_sectors) / 2))
+        write_rate=$(((write_sectors - sd_write_sectors) / 2))
+        sd_read_sectors=$read_sectors
+        sd_write_sectors=$write_sectors
+        disk="SD $((size_tenths / 10)).$((size_tenths % 10))G R ${read_rate}K/s W ${write_rate}K/s"
+    fi
+
+    printf '\r\033[2KRecovery | RAM %s/%sM | load %s | up %sm | %s' \
+        "$mem_used" "$mem_total" "$load" "$uptime" "$disk"
+    printf '\r\n\033[2KPress any key to enter Shell'
+}
+
+printf '\033[2J\033[H'
+render_status
+stty raw -echo min 1 time 0
+while ! /usr/sbin/onekvm-recovery-read-key; do
+    printf '\r\033[1A'
+    render_status
+done
+stty sane
+printf '\r\n'
+cd /
+exec sh -i

@@ -1,0 +1,199 @@
+#!/bin/sh
+
+recovery_enabled() {
+    return 0
+}
+
+recovery_die() {
+    fatal "OneKVM recovery: $1"
+}
+
+recovery_wait_for() {
+    path=$1
+    count=0
+    while [ ! -e "$path" ] && [ "$count" -lt 50 ]; do
+        sleep 0.1
+        count=$((count + 1))
+    done
+    [ -e "$path" ]
+}
+
+recovery_wait_for_udc() {
+    count=0
+    while [ "$count" -lt 50 ]; do
+        for candidate in /sys/class/udc/*; do
+            [ -e "$candidate" ] || continue
+            printf '%s\n' "${candidate##*/}"
+            return 0
+        done
+        sleep 0.1
+        count=$((count + 1))
+    done
+    return 1
+}
+
+recovery_requested_by_cmdline() {
+    case "${bootparam_onekvm_recovery:-}" in
+        1|true|yes) return 0 ;;
+    esac
+    return 1
+}
+
+recovery_marker_present() {
+    recovery_wait_for /dev/mmcblk0p1 || return 1
+
+    marker_mount=/run/onekvm-recovery-boot
+    mkdir -p "$marker_mount"
+    mount -t vfat -o ro /dev/mmcblk0p1 "$marker_mount" || return 1
+    marker=false
+    [ ! -e "$marker_mount/rec" ] || marker=true
+    umount "$marker_mount" || recovery_die "cannot unmount the SD boot partition"
+    rmdir "$marker_mount"
+    [ "$marker" = true ]
+}
+
+recovery_factory_reset_userdata() {
+    recovery_wait_for /dev/mmcblk0p1 || recovery_die "SD boot partition not found"
+
+    marker_mount=/run/onekvm-recovery-boot
+    mkdir -p "$marker_mount"
+    mount -t vfat -o ro /dev/mmcblk0p1 "$marker_mount" ||
+        recovery_die "cannot mount the SD boot partition"
+    requested=false
+    [ ! -e "$marker_mount/onekvm-factory-reset" ] || requested=true
+    umount "$marker_mount" || recovery_die "cannot unmount the SD boot partition"
+    rmdir "$marker_mount"
+    [ "$requested" = true ] || return 0
+
+    recovery_wait_for /dev/mmcblk0p4 || recovery_die "userdata partition not found"
+    [ "$(cat /sys/class/block/mmcblk0p4/partition 2>/dev/null)" = 4 ] ||
+        recovery_die "refusing to erase an unexpected userdata device"
+    userdata_size=$(cat /sys/class/block/mmcblk0p4/size 2>/dev/null) ||
+        recovery_die "cannot read userdata partition size"
+    [ "$userdata_size" -ge 65536 ] ||
+        recovery_die "refusing to erase an undersized userdata partition"
+
+    msg "OneKVM: erasing NanoKVM userdata"
+    mkfs.ext4 -F -L userdata \
+        -U 4f4b564d-0000-4000-8000-000000000004 \
+        -m 0 -J size=16 \
+        -O ^orphan_file,^metadata_csum_seed \
+        -E lazy_itable_init=1,lazy_journal_init=1 \
+        /dev/mmcblk0p4 >/dev/null || recovery_die "cannot erase userdata"
+    sync
+
+    mkdir -p "$marker_mount"
+    mount -t vfat -o rw /dev/mmcblk0p1 "$marker_mount" ||
+        recovery_die "cannot remount the SD boot partition"
+    rm -f "$marker_mount/onekvm-factory-reset" "$marker_mount/rec"
+    sync
+    umount "$marker_mount" || recovery_die "cannot unmount the SD boot partition"
+    rmdir "$marker_mount"
+    msg "OneKVM: userdata erase complete"
+}
+
+recovery_start_oled() {
+    if insmod /usr/lib/onekvm-initramfs/onekvm-installing-oled.ko \
+        mode=recovery 2>/dev/null; then
+        msg "OneKVM: Recovery OLED canvas enabled (3 second blink)"
+    else
+        info "OneKVM: Recovery OLED is not available on this board"
+    fi
+}
+
+recovery_start_gadget() {
+    recovery_wait_for /dev/mmcblk0 || recovery_die "SD card not found"
+
+    mkdir -p /sys/kernel/config
+    if ! grep -q ' /sys/kernel/config configfs ' /proc/mounts; then
+        mount -t configfs configfs /sys/kernel/config || \
+            recovery_die "cannot mount configfs"
+    fi
+
+    gadget=/sys/kernel/config/usb_gadget/onekvm-recovery
+    mkdir "$gadget" || recovery_die "cannot create USB gadget"
+    cd "$gadget" || recovery_die "cannot enter USB gadget directory"
+
+    printf '%s\n' 0x3346 >idVendor
+    printf '%s\n' 0x1009 >idProduct
+    printf '%s\n' 0x0200 >bcdUSB
+    printf '%s\n' 0x0100 >bcdDevice
+    printf '%s\n' 0xEF >bDeviceClass
+    printf '%s\n' 0x02 >bDeviceSubClass
+    printf '%s\n' 0x01 >bDeviceProtocol
+
+    mkdir strings/0x409 || recovery_die "cannot create USB identity"
+    printf '%s\n' 'OneKVM-Recovery' >strings/0x409/serialnumber
+    printf '%s\n' 'OneKVM' >strings/0x409/manufacturer
+    printf '%s\n' 'OneKVM NanoKVM Recovery' >strings/0x409/product
+
+    mkdir configs/c.1 configs/c.1/strings/0x409 || \
+        recovery_die "cannot create USB configuration"
+    printf '%s\n' 0x80 >configs/c.1/bmAttributes
+    printf '%s\n' 250 >configs/c.1/MaxPower
+    printf '%s\n' 'SD card and root console' >configs/c.1/strings/0x409/configuration
+
+    mkdir functions/mass_storage.sd || recovery_die "cannot create mass-storage function"
+    printf '%s\n' 0 >functions/mass_storage.sd/lun.0/ro
+    printf '%s\n' 0 >functions/mass_storage.sd/lun.0/removable
+    printf '%s\n' 0 >functions/mass_storage.sd/lun.0/cdrom
+    printf '%s\n' 'OneKVM SD Recovery' >functions/mass_storage.sd/lun.0/inquiry_string
+    printf '%s\n' /dev/mmcblk0 >functions/mass_storage.sd/lun.0/file || \
+        recovery_die "cannot export the SD card"
+    ln -s functions/mass_storage.sd configs/c.1/ || \
+        recovery_die "cannot attach mass-storage function"
+
+    mkdir functions/acm.GS0 || recovery_die "cannot create CDC ACM function"
+    ln -s functions/acm.GS0 configs/c.1/ || \
+        recovery_die "cannot attach CDC ACM function"
+
+    recovery_wait_for /proc/cviusb/otg_role || \
+        recovery_die "USB role control is unavailable"
+    printf '%s\n' device >/proc/cviusb/otg_role || \
+        recovery_die "cannot select USB device mode"
+
+    udc=$(recovery_wait_for_udc) || recovery_die "USB device controller not found"
+    printf '%s\n' "$udc" >UDC || recovery_die "cannot bind USB gadget"
+}
+
+recovery_console() {
+    mkdir -p /root
+    export HOME=/root
+    export PATH=/sbin:/bin:/usr/sbin:/usr/bin
+    export PS1='onekvm-recovery# '
+    cd /
+
+    recovery_wait_for /dev/ttyGS0 || recovery_die "USB recovery console was not created"
+    printf '<6>OneKVM recovery: exporting /dev/mmcblk0 with consoles on ttyS0 and ttyGS0\n' \
+        >/dev/kmsg
+    recovery_physical_console &
+    recovery_usb_console
+}
+
+recovery_physical_console() {
+    while :; do
+        getty -L -n -i -l /usr/sbin/onekvm-recovery-console 115200 ttyS0 vt100
+        sleep 1
+    done
+}
+
+recovery_usb_console() {
+    while :; do
+        getty -n -i -l /usr/sbin/onekvm-recovery-console 115200 ttyGS0 vt100
+        sleep 1
+    done
+}
+
+recovery_run() {
+    recovery_factory_reset_userdata
+
+    if recovery_requested_by_cmdline; then
+        recovery_wait_for /dev/mmcblk0p1 || recovery_die "SD boot partition not found"
+    elif ! recovery_marker_present; then
+        return 0
+    fi
+
+    recovery_start_oled
+    recovery_start_gadget
+    recovery_console
+}

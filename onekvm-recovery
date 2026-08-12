@@ -1,0 +1,23 @@
+#!/bin/sh
+set -eu
+
+reboot_after=true
+case "${1:-}" in
+    '') ;;
+    --no-reboot) reboot_after=false ;;
+    *) echo "usage: onekvm-recovery [--no-reboot]" >&2; exit 2 ;;
+esac
+
+[ "$(id -u)" -eq 0 ] || { echo "onekvm-recovery must run as root" >&2; exit 1; }
+mountpoint -q /boot || { echo "/boot is not mounted" >&2; exit 1; }
+
+touch /boot/rec
+sync
+echo "OneKVM recovery requested"
+
+if [ "$reboot_after" = true ]; then
+    # Do not start the shutdown transaction while the caller's oneshot job is
+    # still running. systemd would cancel that start job, causing the API to
+    # report a false failure even though the recovery marker was safely synced.
+    systemctl start --no-block onekvm-reboot.timer
+fi

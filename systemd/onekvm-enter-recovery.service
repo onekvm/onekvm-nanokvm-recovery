@@ -1,0 +1,9 @@
+[Unit]
+Description=Enter OneKVM USB recovery mode
+Requires=onekvm-device-nanokvm-storage.service
+After=onekvm-device-nanokvm-storage.service
+ConditionPathIsMountPoint=/boot
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/onekvm-recovery
