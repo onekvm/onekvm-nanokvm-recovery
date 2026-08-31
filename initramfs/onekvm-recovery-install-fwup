@@ -87,6 +87,46 @@ fi
     exit 1
 }
 
+hash_file() {
+    /usr/sbin/onekvm-recovery-sha256 "$1"
+}
+
+manifest_sha256() {
+    base=${1##*/}
+    [ -f "$manifest" ] || return 1
+    awk -F= -v want="$base" '
+        BEGIN { found=0 }
+        /^\[/ { found=0 }
+        $1=="filename" && $2==want { found=1 }
+        found && $1=="sha256" { gsub(/\r/, "", $2); print $2; exit }
+    ' "$manifest"
+}
+
+progress_write '{"phase":"verify"}'
+manifest=$work/manifest.raucm
+[ -f "$manifest" ] || {
+    echo "firmware bundle is missing manifest.raucm" >&2
+    exit 1
+}
+expected=$(manifest_sha256 "$rootfs")
+[ -n "$expected" ] || {
+    echo "firmware manifest is missing the rootfs sha256" >&2
+    exit 1
+}
+actual=$(hash_file "$rootfs")
+[ "$actual" = "$expected" ] || {
+    echo "rootfs sha256 mismatch" >&2
+    exit 1
+}
+fit_expected=$(manifest_sha256 "$fit" || true)
+if [ -n "$fit_expected" ]; then
+    fit_actual=$(hash_file "$fit")
+    [ "$fit_actual" = "$fit_expected" ] || {
+        echo "boot image sha256 mismatch" >&2
+        exit 1
+    }
+fi
+
 total=$(stat -c %s "$rootfs" 2>/dev/null || wc -c <"$rootfs")
 total=$(printf '%s' "$total" | tr -dc '0-9')
 [ -n "$total" ] || total=0
@@ -105,6 +145,11 @@ while kill -0 "$ddpid" 2>/dev/null; do
 done
 wait "$ddpid"
 sync
+written=$(/usr/sbin/onekvm-recovery-sha256 --bytes "$total" "$root_device")
+[ "$written" = "$expected" ] || {
+    echo "written rootfs sha256 mismatch" >&2
+    exit 1
+}
 progress_write '{"phase":"write-boot"}'
 
 boot=/run/onekvm-recovery-boot

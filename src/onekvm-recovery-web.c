@@ -14,6 +14,7 @@
 #include <unistd.h>
 
 #include "recovery-display.h"
+#include "recovery-sha256.h"
 
 #ifdef HAVE_OPENSSL
 #include <openssl/err.h>
@@ -377,13 +378,20 @@ static void write_progress(const char *json)
 		unlink(tmp);
 }
 
-static void write_progress_upload(long received, long total)
+static void write_progress_upload(long received, long total, const char *sha256)
 {
-	char json[128];
+	char json[256];
+	int n;
 
-	if (snprintf(json, sizeof(json),
-		     "{\"phase\":\"upload\",\"received\":%ld,\"total\":%ld}\n",
-		     received, total) >= (int)sizeof(json))
+	if (sha256 && sha256[0])
+		n = snprintf(json, sizeof(json),
+			     "{\"phase\":\"upload\",\"received\":%ld,\"total\":%ld,\"sha256\":\"%s\"}\n",
+			     received, total, sha256);
+	else
+		n = snprintf(json, sizeof(json),
+			     "{\"phase\":\"upload\",\"received\":%ld,\"total\":%ld}\n",
+			     received, total);
+	if (n < 0 || n >= (int)sizeof(json))
 		return;
 	write_progress(json);
 }
@@ -575,7 +583,7 @@ static void handle_firmware(struct conn *conn, long length)
 		send_text(conn, 400, "Bad Request", "firmware is missing or too large for tmpfs\n");
 		return;
 	}
-	write_progress_upload(0, length);
+	write_progress_upload(0, length, NULL);
 	if (mkdir("/run/onekvm-firmware", 0750) < 0 && errno != EEXIST) {
 		drain_body(conn, remaining);
 		write_progress_error("cannot create firmware tmpfs");
@@ -590,9 +598,13 @@ static void handle_firmware(struct conn *conn, long length)
 		return;
 	}
 	{
+		struct recovery_sha256 hash;
+		uint8_t digest[32];
+		char hex[65];
 		long received = 0;
 		long last_report = 0;
 
+		recovery_sha256_init(&hash);
 		while (remaining > 0) {
 			ssize_t got = conn_read(conn, buffer, remaining > (long)sizeof(buffer) ? sizeof(buffer) : (size_t)remaining);
 			if (got <= 0) {
@@ -616,13 +628,17 @@ static void handle_firmware(struct conn *conn, long length)
 				}
 				return;
 			}
+			recovery_sha256_update(&hash, buffer, (size_t)got);
 			remaining -= got;
 			received += got;
 			if (received - last_report >= PROGRESS_STEP || remaining == 0) {
-				write_progress_upload(received, length);
+				write_progress_upload(received, length, NULL);
 				last_report = received;
 			}
 		}
+		recovery_sha256_final(&hash, digest);
+		recovery_sha256_hex(digest, hex);
+		write_progress_upload(length, length, hex);
 	}
 	fsync(out);
 	close(out);

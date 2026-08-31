@@ -13,7 +13,9 @@ After DHCP, the OLED shows `RECOVERY` and the IPv4 address via C906L
 (`/dev/onekvm-oled`). The same URLs are printed on the serial/USB console.
 Firmware uploads go to a dedicated tmpfs at `/run/onekvm-firmware` sized to
 80% of RAM, so a full `.fwup` does not depend on userdata (which may be
-damaged). The file cannot exceed the free space on that tmpfs.
+damaged). The file cannot exceed the free space on that tmpfs. Recovery hashes the
+upload with SHA-256, checks image hashes in `manifest.raucm`, and re-hashes
+the written rootfs slot.
 Serial/USB consoles and USB mass storage remain available.
 
 ## Build
