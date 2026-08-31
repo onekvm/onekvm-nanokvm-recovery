@@ -92,13 +92,30 @@ recovery_factory_reset_userdata() {
     msg "OneKVM: userdata erase complete"
 }
 
+recovery_load_oled() {
+    [ -e /dev/onekvm-oled ] && return 0
+    release=$(uname -r 2>/dev/null || true)
+    if [ -n "$release" ] && [ -f "/lib/modules/${release}/extra/onekvm/onekvm_oled.ko" ]; then
+        insmod "/lib/modules/${release}/extra/onekvm/onekvm_oled.ko" 2>/dev/null || true
+    fi
+    [ -e /dev/onekvm-oled ] && return 0
+    if [ -f /usr/lib/onekvm-initramfs/onekvm-oled.ko ]; then
+        insmod /usr/lib/onekvm-initramfs/onekvm-oled.ko 2>/dev/null || true
+    fi
+    recovery_wait_for /dev/onekvm-oled
+}
+
 recovery_start_oled() {
+    if recovery_load_oled && /usr/sbin/onekvm-recovery-oled canvas 2>/dev/null; then
+        msg "OneKVM: Recovery OLED via C906L"
+        return
+    fi
     if insmod /usr/lib/onekvm-initramfs/onekvm-installing-oled.ko \
         mode=recovery 2>/dev/null; then
-        msg "OneKVM: Recovery OLED canvas enabled (3 second blink)"
-    else
-        info "OneKVM: Recovery OLED is not available on this board"
+        msg "OneKVM: Recovery OLED canvas enabled"
+        return
     fi
+    info "OneKVM: Recovery OLED is not available on this board"
 }
 
 recovery_start_gadget() {
@@ -161,7 +178,25 @@ recovery_start_network() {
         name=${iface##*/}
         [ "$name" = lo ] && continue
         ip link set "$name" up 2>/dev/null || ifconfig "$name" up 2>/dev/null || continue
-        udhcpc -i "$name" -n -q -t 6 -T 1 >/dev/null 2>&1 || true
+        udhcpc -i "$name" -b -t 12 -T 2 >/dev/null 2>&1 || \
+            udhcpc -i "$name" -n -q -t 6 -T 1 >/dev/null 2>&1 || true
+    done
+}
+
+recovery_publish_network() {
+    last=
+    while :; do
+        cur=$(/usr/sbin/onekvm-recovery-oled print 2>/dev/null || true)
+        if [ "$cur" != "$last" ]; then
+            /usr/sbin/onekvm-recovery-oled show >/dev/null 2>&1 || true
+            [ -z "$cur" ] || {
+                printf '%s' "$cur" >/dev/kmsg
+                printf '%s' "$cur" >/dev/ttyS0 2>/dev/null || true
+                printf '%s' "$cur" >/etc/issue
+            }
+            last=$cur
+        fi
+        sleep 4
     done
 }
 
@@ -179,6 +214,7 @@ recovery_console() {
     cd /
 
     recovery_start_network
+    recovery_publish_network &
     recovery_start_web &
     printf '<6>OneKVM recovery: HTTP 80/443 firmware, reset-user, reboot; USB SD + consoles\n' \
         >/dev/kmsg

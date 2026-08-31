@@ -13,6 +13,8 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include "recovery-display.h"
+
 #ifdef HAVE_OPENSSL
 #include <openssl/err.h>
 #include <openssl/ssl.h>
@@ -427,6 +429,16 @@ static void handle_get(struct conn *conn, const char *request_path)
 	FILE *file;
 	long size;
 
+	if (!strcmp(request_path, "/status")) {
+		char json[256];
+
+		if (recovery_status_json(json, sizeof(json)) < 0)
+			send_text(conn, 500, "Internal Server Error", "cannot list addresses\n");
+		else
+			send_response(conn, 200, "OK", "application/json; charset=utf-8",
+				      json, strlen(json));
+		return;
+	}
 	if (!strcmp(rel, "/") || !strcmp(rel, "/index.html"))
 		rel = "/index.html";
 	if (!path_is_safe(rel)) {

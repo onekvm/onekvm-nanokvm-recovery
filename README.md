@@ -9,6 +9,8 @@ helper, systemd integration, and a recovery web UI on TCP 80/443.
 The recovery web server on TCP 80/443 serves the Recovery UI built by
 `onekvm-ui` (`dist-recovery/`). That page only exposes firmware flash
 (`.fwup` to the inactive A/B slot), reset of the default Web user, and reboot.
+After DHCP, the OLED shows `RECOVERY` and the IPv4 address via C906L
+(`/dev/onekvm-oled`). The same URLs are printed on the serial/USB console.
 Serial/USB consoles and USB mass storage remain available.
 
 ## Build
