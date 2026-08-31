@@ -1,0 +1,108 @@
+#!/bin/sh
+set -eu
+
+bundle=${1:-}
+[ -n "$bundle" ] && [ -s "$bundle" ] || {
+    echo "usage: onekvm-recovery-install-fwup BUNDLE" >&2
+    exit 2
+}
+
+# USB mass-storage exports the whole card. Release it before writing slots.
+gadget=/sys/kernel/config/usb_gadget/onekvm-recovery
+if [ -e "$gadget/UDC" ]; then
+    printf '\n' >"$gadget/UDC" || true
+    sleep 1
+fi
+
+magic=$(od -An -tx1 -N4 "$bundle" | tr -d ' \n')
+[ "$magic" = "68737173" ] || {
+    echo "firmware is not an OneKVM .fwup squashfs bundle" >&2
+    exit 1
+}
+
+work=/run/onekvm-recovery-data/storage/fw-extract
+rm -rf "$work"
+mkdir -p "$work"
+unsquashfs -d "$work" -f "$bundle" >/dev/null
+
+rootfs=
+for candidate in "$work"/onekvm-nanokvm-image*.squashfs "$work"/*.rootfs.squashfs; do
+    [ -f "$candidate" ] || continue
+    rootfs=$candidate
+    break
+done
+[ -n "$rootfs" ] || {
+    echo "firmware bundle is missing a rootfs image" >&2
+    exit 1
+}
+
+current=A
+for argument in $(cat /proc/cmdline); do
+    case "$argument" in
+        rauc.slot=A|rauc.slot=B) current=${argument#rauc.slot=} ;;
+    esac
+done
+if [ "$current" = A ]; then
+    target=B
+    root_device=/dev/mmcblk0p3
+    bootfile=boot-b.itb
+    fit=$work/onekvm-nanokvm-boot-b-onekvm-nanokvm.itb
+    build_file=build-id-b
+else
+    target=A
+    root_device=/dev/mmcblk0p2
+    bootfile=boot.sd
+    fit=$work/onekvm-nanokvm-boot-a-onekvm-nanokvm.itb
+    build_file=build-id-a
+fi
+[ -s "$fit" ] || {
+    echo "firmware bundle is missing $bootfile" >&2
+    exit 1
+}
+
+dd if="$rootfs" of="$root_device" bs=1M conv=fsync
+sync
+
+boot=/run/onekvm-recovery-boot
+mkdir -p "$boot"
+mount -t vfat -o rw /dev/mmcblk0p1 "$boot"
+cp "$fit" "$boot/$bootfile"
+if [ -s "$work/onekvm-nanokvm-build-id" ]; then
+    cp "$work/onekvm-nanokvm-build-id" "$boot/$build_file"
+fi
+chmod 0644 "$boot/$bootfile" "$boot/$build_file" 2>/dev/null || true
+sync
+
+env_file=$boot/uEnv.txt
+othbootargs=$(tr -d '\000' <"$env_file" | sed -n 's/^othbootargs=//p')
+sdboot=$(tr -d '\000' <"$env_file" | sed -n 's/^sdboot=//p')
+state_a=$(tr -d '\000' <"$env_file" | sed -n 's/^rauc_state_A=//p')
+state_b=$(tr -d '\000' <"$env_file" | sed -n 's/^rauc_state_B=//p')
+[ -n "$othbootargs" ] && [ -n "$sdboot" ]
+[ -n "$state_a" ] || state_a=good
+[ -n "$state_b" ] || state_b=good
+if [ "$target" = A ]; then
+    state_a=good
+else
+    state_b=good
+fi
+build_id=$(tr -d '\n' <"$boot/$build_file")
+umask 077
+{
+    printf 'boot_slot=%s\n' "$target"
+    printf 'bootfile=%s\n' "$bootfile"
+    printf 'root=root=%s rootfstype=squashfs ro rootwait rauc.slot=%s onekvm.build-id=%s\n' \
+        "$root_device" "$target" "$build_id"
+    printf 'rauc_state_A=%s\n' "$state_a"
+    printf 'rauc_state_B=%s\n' "$state_b"
+    printf 'othbootargs=%s\n' "$othbootargs"
+    printf 'sdboot=%s\n' "$sdboot"
+    printf '\000'
+} >"$env_file.new"
+sync
+mv -f "$env_file.new" "$env_file"
+sync
+umount "$boot"
+rmdir "$boot" 2>/dev/null || true
+rm -rf "$work"
+echo "installed firmware to slot $target"

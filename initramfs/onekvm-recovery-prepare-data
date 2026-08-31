@@ -1,0 +1,20 @@
+#!/bin/sh
+set -eu
+
+# USB MSC exports the whole card. Release it before mounting userdata.
+gadget=/sys/kernel/config/usb_gadget/onekvm-recovery
+if [ -e "$gadget/UDC" ]; then
+    printf '\n' >"$gadget/UDC" || true
+    sleep 1
+fi
+
+if ! grep -q ' /run/onekvm-recovery-data ' /proc/mounts; then
+    [ -b /dev/mmcblk0p4 ] || {
+        echo "userdata partition not found" >&2
+        exit 1
+    }
+    mkdir -p /run/onekvm-recovery-data
+    mount -t ext4 -o rw /dev/mmcblk0p4 /run/onekvm-recovery-data
+fi
+mkdir -p /run/onekvm-recovery-data/storage \
+    /run/onekvm-recovery-data/upper/etc/onekvm

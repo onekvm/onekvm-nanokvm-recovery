@@ -156,6 +156,21 @@ recovery_start_gadget() {
     printf '%s\n' "$udc" >UDC || recovery_die "cannot bind USB gadget"
 }
 
+recovery_start_network() {
+    for iface in /sys/class/net/*; do
+        name=${iface##*/}
+        [ "$name" = lo ] && continue
+        ip link set "$name" up 2>/dev/null || ifconfig "$name" up 2>/dev/null || continue
+        udhcpc -i "$name" -n -q -t 6 -T 1 >/dev/null 2>&1 || true
+    done
+}
+
+recovery_start_web() {
+    if ! /usr/sbin/onekvm-recovery-web; then
+        info "OneKVM: recovery web server exited"
+    fi
+}
+
 recovery_console() {
     mkdir -p /root
     export HOME=/root
@@ -163,11 +178,16 @@ recovery_console() {
     export PS1='onekvm-recovery# '
     cd /
 
-    recovery_wait_for /dev/ttyGS0 || recovery_die "USB recovery console was not created"
-    printf '<6>OneKVM recovery: exporting /dev/mmcblk0 with consoles on ttyS0 and ttyGS0\n' \
+    recovery_start_network
+    recovery_start_web &
+    printf '<6>OneKVM recovery: HTTP 80/443 firmware, reset-user, reboot; USB SD + consoles\n' \
         >/dev/kmsg
-    recovery_physical_console &
-    recovery_usb_console
+    if recovery_wait_for /dev/ttyGS0; then
+        recovery_physical_console &
+        recovery_usb_console
+        return
+    fi
+    recovery_physical_console
 }
 
 recovery_physical_console() {
