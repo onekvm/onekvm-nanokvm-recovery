@@ -7,8 +7,8 @@ hook、运行时标记命令、恢复控制台、输入辅助程序、systemd �
 80/443 的恢复网页。
 
 initramfs 只保留 USB gadget、控制台，以及从 FAT `/boot` 解压 `recovery.zip`
-的钩子。OpenSSL、恢复网页、SHA-256 和刷写程序不进 16 MiB 的 FIT。zip 随
-`.fwup` 一起更新。
+的钩子。OpenSSL、恢复网页、SHA-256、刷写程序和刷机/恢复 OLED `.ko` 不进
+16 MiB 的 FIT。zip 随 `.fwup` 一起更新。
 
 80/443 上的恢复网页使用 `onekvm-ui` 打包的 Recovery UI（`dist-recovery/`）。
 页面只提供固件刷写（把 `.fwup` 写到未启动的 A/B 槽）、重置默认 Web 用户和

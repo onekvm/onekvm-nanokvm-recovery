@@ -93,6 +93,10 @@ recovery_factory_reset_userdata() {
 }
 
 recovery_load_payload() {
+    [ -x /usr/sbin/onekvm-recovery-web ] && return 0
+    if type bootzip_unpack >/dev/null 2>&1; then
+        bootzip_unpack && return 0
+    fi
     boot=/run/onekvm-recovery-boot
     mkdir -p "$boot"
     mount -t vfat -o ro /dev/mmcblk0p1 "$boot" || return 1
@@ -114,6 +118,7 @@ recovery_load_payload() {
         /usr/sbin/onekvm-recovery-install-fwup \
         /usr/sbin/onekvm-recovery-prepare-data 2>/dev/null || true
     chmod 0600 /etc/onekvm-recovery/key.pem 2>/dev/null || true
+    chmod 0644 /usr/lib/onekvm-initramfs/*.ko 2>/dev/null || true
     [ -x /usr/sbin/onekvm-recovery-web ]
 }
 
