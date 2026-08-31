@@ -173,10 +173,14 @@ recovery_start_gadget() {
     printf '%s\n' "$udc" >UDC || recovery_die "cannot bind USB gadget"
 }
 
-recovery_prepare_tmpfs() {
-    mkdir -p /tmp
-    grep -q ' /tmp tmpfs ' /proc/mounts && return 0
-    mount -t tmpfs -o mode=1777,size=50% tmpfs /tmp 2>/dev/null || true
+recovery_prepare_firmware_tmpfs() {
+    mkdir -p /run/onekvm-firmware
+    if grep -q ' /run/onekvm-firmware tmpfs ' /proc/mounts; then
+        return 0
+    fi
+    mount -t tmpfs -o mode=0750,size=80% tmpfs /run/onekvm-firmware ||
+        mount -t tmpfs -o mode=0750 tmpfs /run/onekvm-firmware ||
+        recovery_die "cannot mount firmware tmpfs"
 }
 
 recovery_start_network() {
@@ -219,7 +223,7 @@ recovery_console() {
     export PS1='onekvm-recovery# '
     cd /
 
-    recovery_prepare_tmpfs
+    recovery_prepare_firmware_tmpfs
     recovery_start_network
     recovery_publish_network &
     recovery_start_web &

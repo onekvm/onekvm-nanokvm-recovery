@@ -11,8 +11,9 @@ The recovery web server on TCP 80/443 serves the Recovery UI built by
 (`.fwup` to the inactive A/B slot), reset of the default Web user, and reboot.
 After DHCP, the OLED shows `RECOVERY` and the IPv4 address via C906L
 (`/dev/onekvm-oled`). The same URLs are printed on the serial/USB console.
-Firmware uploads are stored in tmpfs (`/tmp`) and cannot exceed the free
-RAM on that filesystem.
+Firmware uploads go to a dedicated tmpfs at `/run/onekvm-firmware` sized to
+80% of RAM, so a full `.fwup` does not depend on userdata (which may be
+damaged). The file cannot exceed the free space on that tmpfs.
 Serial/USB consoles and USB mass storage remain available.
 
 ## Build

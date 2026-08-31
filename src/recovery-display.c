@@ -222,9 +222,8 @@ int recovery_collect_ipv4(struct recovery_addrs *addrs)
 	return 0;
 }
 
-#define RECOVERY_FIRMWARE_DIR "/tmp"
-#define RECOVERY_FIRMWARE_RESERVE (8LL * 1024 * 1024)
-#define RECOVERY_FIRMWARE_HARD_MAX (128LL * 1024 * 1024)
+#define RECOVERY_FIRMWARE_DIR "/run/onekvm-firmware"
+#define RECOVERY_FIRMWARE_RESERVE (16LL * 1024 * 1024)
 
 static long meminfo_available(void)
 {
@@ -258,8 +257,6 @@ long recovery_firmware_limit(void)
 	if (available <= RECOVERY_FIRMWARE_RESERVE)
 		return 0;
 	available -= RECOVERY_FIRMWARE_RESERVE;
-	if (available > RECOVERY_FIRMWARE_HARD_MAX)
-		available = RECOVERY_FIRMWARE_HARD_MAX;
 	return (long)available;
 }
 
@@ -436,7 +433,7 @@ int recovery_render_self_test(void)
 	{
 		long limit = recovery_firmware_limit();
 
-		if (limit < 0 || limit > 128LL * 1024 * 1024)
+		if (limit < 0)
 			return 1;
 	}
 	return 0;

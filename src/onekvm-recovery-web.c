@@ -28,7 +28,7 @@
 #define DEFAULT_CERT "/etc/onekvm-recovery/cert.pem"
 #define DEFAULT_KEY "/etc/onekvm-recovery/key.pem"
 #define DEFAULT_CONFIG "/run/onekvm-recovery-data/upper/etc/onekvm/config.json"
-#define DEFAULT_FIRMWARE "/tmp/onekvm-recovery-update.fwup"
+#define DEFAULT_FIRMWARE "/run/onekvm-firmware/recovery-update.fwup"
 #define INSTALL_FWUP "/usr/sbin/onekvm-recovery-install-fwup"
 #define PREPARE_DATA "/usr/sbin/onekvm-recovery-prepare-data"
 #define DEFAULT_PROGRESS "/run/onekvm-recovery-progress"
@@ -576,10 +576,10 @@ static void handle_firmware(struct conn *conn, long length)
 		return;
 	}
 	write_progress_upload(0, length);
-	if (mkdir("/tmp", 01777) < 0 && errno != EEXIST) {
+	if (mkdir("/run/onekvm-firmware", 0750) < 0 && errno != EEXIST) {
 		drain_body(conn, remaining);
-		write_progress_error("cannot create tmpfs directory");
-		send_text(conn, 500, "Internal Server Error", "cannot create tmpfs directory\n");
+		write_progress_error("cannot create firmware tmpfs");
+		send_text(conn, 500, "Internal Server Error", "cannot create firmware tmpfs\n");
 		return;
 	}
 	out = open(firmware_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
@@ -626,12 +626,6 @@ static void handle_firmware(struct conn *conn, long length)
 	}
 	fsync(out);
 	close(out);
-	if (prepare_storage() < 0) {
-		unlink(firmware_path);
-		write_progress_error("cannot prepare userdata");
-		send_text(conn, 500, "Internal Server Error", "cannot prepare userdata\n");
-		return;
-	}
 	write_progress("{\"phase\":\"extract\"}\n");
 	if (spawn_command(install_argv) < 0) {
 		unlink(firmware_path);

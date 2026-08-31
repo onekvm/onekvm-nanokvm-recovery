@@ -8,6 +8,10 @@ bundle=${1:-}
 }
 
 progress=${ONEKVM_RECOVERY_PROGRESS:-/run/onekvm-recovery-progress}
+fwroot=/run/onekvm-firmware
+mnt=$fwroot/mnt
+extract=$fwroot/fw-extract
+mounted=0
 
 progress_write() {
     printf '%s\n' "$1" >"$progress.tmp" || return 0
@@ -15,6 +19,9 @@ progress_write() {
 }
 
 progress_error() {
+    if [ "$mounted" = 1 ]; then
+        umount "$mnt" 2>/dev/null || true
+    fi
     progress_write '{"phase":"error","message":"firmware install failed"}'
 }
 
@@ -33,11 +40,17 @@ magic=$(od -An -tx1 -N4 "$bundle" | tr -d ' \n')
     exit 1
 }
 
-work=/run/onekvm-recovery-data/storage/fw-extract
-rm -rf "$work"
-mkdir -p "$work"
+work=$extract
 progress_write '{"phase":"extract"}'
-unsquashfs -d "$work" -f "$bundle" >/dev/null
+mkdir -p "$mnt"
+if mount -t squashfs -o loop,ro "$bundle" "$mnt" 2>/dev/null; then
+    work=$mnt
+    mounted=1
+else
+    rm -rf "$extract"
+    mkdir -p "$extract"
+    unsquashfs -d "$extract" -f "$bundle" >/dev/null
+fi
 
 rootfs=
 for candidate in "$work"/onekvm-nanokvm-image*.squashfs "$work"/*.rootfs.squashfs; do
@@ -136,7 +149,12 @@ mv -f "$env_file.new" "$env_file"
 sync
 umount "$boot"
 rmdir "$boot" 2>/dev/null || true
-rm -rf "$work"
+if [ "$mounted" = 1 ]; then
+    umount "$mnt" || true
+    rmdir "$mnt" 2>/dev/null || true
+else
+    rm -rf "$extract"
+fi
 progress_write '{"phase":"done"}'
 trap - EXIT
 echo "installed firmware to slot $target"
