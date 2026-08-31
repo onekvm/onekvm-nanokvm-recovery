@@ -32,6 +32,8 @@
 #define DEFAULT_FIRMWARE "/run/onekvm-recovery-data/storage/recovery-update.fwup"
 #define INSTALL_FWUP "/usr/sbin/onekvm-recovery-install-fwup"
 #define PREPARE_DATA "/usr/sbin/onekvm-recovery-prepare-data"
+#define DEFAULT_PROGRESS "/run/onekvm-recovery-progress"
+#define PROGRESS_STEP (512 * 1024)
 
 static const char *www_root = DEFAULT_WWW;
 #ifdef HAVE_OPENSSL
@@ -40,6 +42,7 @@ static const char *key_path = DEFAULT_KEY;
 #endif
 static const char *config_path = DEFAULT_CONFIG;
 static const char *firmware_path = DEFAULT_FIRMWARE;
+static const char *progress_path = DEFAULT_PROGRESS;
 
 struct conn {
 	int fd;
@@ -356,6 +359,47 @@ static void send_text(struct conn *conn, int status, const char *reason, const c
 	send_response(conn, status, reason, "text/plain; charset=utf-8", body, strlen(body));
 }
 
+static void write_progress(const char *json)
+{
+	char tmp[256];
+	int fd;
+	size_t length;
+
+	if (!json || snprintf(tmp, sizeof(tmp), "%s.tmp", progress_path) >= (int)sizeof(tmp))
+		return;
+	length = strlen(json);
+	fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+	if (fd < 0)
+		return;
+	if (write_all_fd(fd, json, length) == 0)
+		fsync(fd);
+	close(fd);
+	if (rename(tmp, progress_path) < 0)
+		unlink(tmp);
+}
+
+static void write_progress_upload(long received, long total)
+{
+	char json[128];
+
+	if (snprintf(json, sizeof(json),
+		     "{\"phase\":\"upload\",\"received\":%ld,\"total\":%ld}\n",
+		     received, total) >= (int)sizeof(json))
+		return;
+	write_progress(json);
+}
+
+static void write_progress_error(const char *message)
+{
+	char json[192];
+
+	if (!message)
+		message = "firmware failed";
+	if (snprintf(json, sizeof(json), "{\"phase\":\"error\",\"message\":\"%s\"}\n", message) >= (int)sizeof(json))
+		return;
+	write_progress(json);
+}
+
 static int spawn_command(char *const argv[])
 {
 	pid_t child = fork();
@@ -439,6 +483,26 @@ static void handle_get(struct conn *conn, const char *request_path)
 				      json, strlen(json));
 		return;
 	}
+	if (!strcmp(request_path, "/progress")) {
+		char json[256];
+		FILE *progress;
+		size_t n = 0;
+
+		progress = fopen(progress_path, "r");
+		if (progress) {
+			n = fread(json, 1, sizeof(json) - 1, progress);
+			fclose(progress);
+		}
+		if (n == 0) {
+			const char idle[] = "{\"phase\":\"idle\"}\n";
+
+			n = sizeof(idle) - 1;
+			memcpy(json, idle, n);
+		}
+		json[n] = 0;
+		send_response(conn, 200, "OK", "application/json; charset=utf-8", json, n);
+		return;
+	}
 	if (!strcmp(rel, "/") || !strcmp(rel, "/index.html"))
 		rel = "/index.html";
 	if (!path_is_safe(rel)) {
@@ -508,11 +572,14 @@ static void handle_firmware(struct conn *conn, long length)
 
 	if (length <= 0 || length > MAX_FIRMWARE) {
 		drain_body(conn, length > 0 ? length : 0);
+		write_progress_error("firmware is missing or too large");
 		send_text(conn, 400, "Bad Request", "firmware is missing or too large\n");
 		return;
 	}
+	write_progress_upload(0, length);
 	if (prepare_storage() < 0) {
 		drain_body(conn, remaining);
+		write_progress_error("cannot prepare userdata");
 		send_text(conn, 500, "Internal Server Error", "cannot prepare userdata\n");
 		return;
 	}
@@ -522,6 +589,7 @@ static void handle_firmware(struct conn *conn, long length)
 		*slash = 0;
 		if (mkdir(directory, 0750) < 0 && errno != EEXIST) {
 			drain_body(conn, remaining);
+			write_progress_error("cannot create firmware directory");
 			send_text(conn, 500, "Internal Server Error", "cannot create firmware directory\n");
 			return;
 		}
@@ -529,29 +597,45 @@ static void handle_firmware(struct conn *conn, long length)
 	out = open(firmware_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
 	if (out < 0) {
 		drain_body(conn, remaining);
+		write_progress_error("cannot create firmware file");
 		send_text(conn, 500, "Internal Server Error", "cannot create firmware file\n");
 		return;
 	}
-	while (remaining > 0) {
-		ssize_t got = conn_read(conn, buffer, remaining > (long)sizeof(buffer) ? sizeof(buffer) : (size_t)remaining);
-		if (got <= 0) {
-			close(out);
-			send_text(conn, 400, "Bad Request", "firmware upload truncated\n");
-			return;
+	{
+		long received = 0;
+		long last_report = 0;
+
+		while (remaining > 0) {
+			ssize_t got = conn_read(conn, buffer, remaining > (long)sizeof(buffer) ? sizeof(buffer) : (size_t)remaining);
+			if (got <= 0) {
+				close(out);
+				write_progress_error("firmware upload truncated");
+				send_text(conn, 400, "Bad Request", "firmware upload truncated\n");
+				return;
+			}
+			if (write_all_fd(out, buffer, (size_t)got) < 0) {
+				close(out);
+				write_progress_error("cannot write firmware");
+				send_text(conn, 500, "Internal Server Error", "cannot write firmware\n");
+				return;
+			}
+			remaining -= got;
+			received += got;
+			if (received - last_report >= PROGRESS_STEP || remaining == 0) {
+				write_progress_upload(received, length);
+				last_report = received;
+			}
 		}
-		if (write_all_fd(out, buffer, (size_t)got) < 0) {
-			close(out);
-			send_text(conn, 500, "Internal Server Error", "cannot write firmware\n");
-			return;
-		}
-		remaining -= got;
 	}
 	fsync(out);
 	close(out);
+	write_progress("{\"phase\":\"extract\"}\n");
 	if (spawn_command(install_argv) < 0) {
+		write_progress_error("firmware install failed");
 		send_text(conn, 500, "Internal Server Error", "firmware install failed\n");
 		return;
 	}
+	write_progress("{\"phase\":\"done\"}\n");
 	send_text(conn, 200, "OK", "firmware installed\n");
 }
 

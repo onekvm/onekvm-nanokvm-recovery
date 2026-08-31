@@ -7,6 +7,19 @@ bundle=${1:-}
     exit 2
 }
 
+progress=${ONEKVM_RECOVERY_PROGRESS:-/run/onekvm-recovery-progress}
+
+progress_write() {
+    printf '%s\n' "$1" >"$progress.tmp" || return 0
+    mv -f "$progress.tmp" "$progress" || true
+}
+
+progress_error() {
+    progress_write '{"phase":"error","message":"firmware install failed"}'
+}
+
+trap progress_error EXIT
+
 # USB mass-storage exports the whole card. Release it before writing slots.
 gadget=/sys/kernel/config/usb_gadget/onekvm-recovery
 if [ -e "$gadget/UDC" ]; then
@@ -23,6 +36,7 @@ magic=$(od -An -tx1 -N4 "$bundle" | tr -d ' \n')
 work=/run/onekvm-recovery-data/storage/fw-extract
 rm -rf "$work"
 mkdir -p "$work"
+progress_write '{"phase":"extract"}'
 unsquashfs -d "$work" -f "$bundle" >/dev/null
 
 rootfs=
@@ -60,8 +74,25 @@ fi
     exit 1
 }
 
-dd if="$rootfs" of="$root_device" bs=1M conv=fsync
+total=$(stat -c %s "$rootfs" 2>/dev/null || wc -c <"$rootfs")
+total=$(printf '%s' "$total" | tr -dc '0-9')
+[ -n "$total" ] || total=0
+progress_write "{\"phase\":\"write-rootfs\",\"received\":0,\"total\":$total}"
+dd if="$rootfs" of="$root_device" bs=1M conv=fsync &
+ddpid=$!
+while kill -0 "$ddpid" 2>/dev/null; do
+    written=0
+    if [ -r "/proc/$ddpid/io" ]; then
+        written=$(sed -n 's/^write_bytes:[[:space:]]*//p' "/proc/$ddpid/io")
+        written=$(printf '%s' "$written" | tr -dc '0-9')
+    fi
+    [ -n "$written" ] || written=0
+    progress_write "{\"phase\":\"write-rootfs\",\"received\":$written,\"total\":$total}"
+    sleep 1
+done
+wait "$ddpid"
 sync
+progress_write '{"phase":"write-boot"}'
 
 boot=/run/onekvm-recovery-boot
 mkdir -p "$boot"
@@ -72,6 +103,7 @@ if [ -s "$work/onekvm-nanokvm-build-id" ]; then
 fi
 chmod 0644 "$boot/$bootfile" "$boot/$build_file" 2>/dev/null || true
 sync
+progress_write '{"phase":"switch"}'
 
 env_file=$boot/uEnv.txt
 othbootargs=$(tr -d '\000' <"$env_file" | sed -n 's/^othbootargs=//p')
@@ -105,4 +137,6 @@ sync
 umount "$boot"
 rmdir "$boot" 2>/dev/null || true
 rm -rf "$work"
+progress_write '{"phase":"done"}'
+trap - EXIT
 echo "installed firmware to slot $target"
