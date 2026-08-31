@@ -23,13 +23,12 @@
 #define HTTP_PORT 80
 #define HTTPS_PORT 443
 #define HEADER_LIMIT 8192
-#define MAX_FIRMWARE (512LL * 1024 * 1024)
 #define MAX_STATIC (4LL * 1024 * 1024)
 #define DEFAULT_WWW "/usr/share/onekvm-recovery"
 #define DEFAULT_CERT "/etc/onekvm-recovery/cert.pem"
 #define DEFAULT_KEY "/etc/onekvm-recovery/key.pem"
 #define DEFAULT_CONFIG "/run/onekvm-recovery-data/upper/etc/onekvm/config.json"
-#define DEFAULT_FIRMWARE "/run/onekvm-recovery-data/storage/recovery-update.fwup"
+#define DEFAULT_FIRMWARE "/tmp/onekvm-recovery-update.fwup"
 #define INSTALL_FWUP "/usr/sbin/onekvm-recovery-install-fwup"
 #define PREPARE_DATA "/usr/sbin/onekvm-recovery-prepare-data"
 #define DEFAULT_PROGRESS "/run/onekvm-recovery-progress"
@@ -474,7 +473,7 @@ static void handle_get(struct conn *conn, const char *request_path)
 	long size;
 
 	if (!strcmp(request_path, "/status")) {
-		char json[256];
+		char json[512];
 
 		if (recovery_status_json(json, sizeof(json)) < 0)
 			send_text(conn, 500, "Internal Server Error", "cannot list addresses\n");
@@ -563,36 +562,25 @@ static void drain_body(struct conn *conn, long remaining)
 
 static void handle_firmware(struct conn *conn, long length)
 {
-	char directory[256];
-	char *slash;
 	int out;
 	long remaining = length;
+	long limit;
 	char buffer[16384];
 	char *install_argv[] = { INSTALL_FWUP, (char *)firmware_path, NULL };
 
-	if (length <= 0 || length > MAX_FIRMWARE) {
+	limit = recovery_firmware_limit();
+	if (length <= 0 || limit <= 0 || length > limit) {
 		drain_body(conn, length > 0 ? length : 0);
-		write_progress_error("firmware is missing or too large");
-		send_text(conn, 400, "Bad Request", "firmware is missing or too large\n");
+		write_progress_error("firmware is missing or too large for tmpfs");
+		send_text(conn, 400, "Bad Request", "firmware is missing or too large for tmpfs\n");
 		return;
 	}
 	write_progress_upload(0, length);
-	if (prepare_storage() < 0) {
+	if (mkdir("/tmp", 01777) < 0 && errno != EEXIST) {
 		drain_body(conn, remaining);
-		write_progress_error("cannot prepare userdata");
-		send_text(conn, 500, "Internal Server Error", "cannot prepare userdata\n");
+		write_progress_error("cannot create tmpfs directory");
+		send_text(conn, 500, "Internal Server Error", "cannot create tmpfs directory\n");
 		return;
-	}
-	snprintf(directory, sizeof(directory), "%s", firmware_path);
-	slash = strrchr(directory, '/');
-	if (slash) {
-		*slash = 0;
-		if (mkdir(directory, 0750) < 0 && errno != EEXIST) {
-			drain_body(conn, remaining);
-			write_progress_error("cannot create firmware directory");
-			send_text(conn, 500, "Internal Server Error", "cannot create firmware directory\n");
-			return;
-		}
 	}
 	out = open(firmware_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
 	if (out < 0) {
@@ -609,14 +597,23 @@ static void handle_firmware(struct conn *conn, long length)
 			ssize_t got = conn_read(conn, buffer, remaining > (long)sizeof(buffer) ? sizeof(buffer) : (size_t)remaining);
 			if (got <= 0) {
 				close(out);
+				unlink(firmware_path);
 				write_progress_error("firmware upload truncated");
 				send_text(conn, 400, "Bad Request", "firmware upload truncated\n");
 				return;
 			}
 			if (write_all_fd(out, buffer, (size_t)got) < 0) {
+				int err = errno;
+
 				close(out);
-				write_progress_error("cannot write firmware");
-				send_text(conn, 500, "Internal Server Error", "cannot write firmware\n");
+				unlink(firmware_path);
+				if (err == ENOSPC) {
+					write_progress_error("firmware is missing or too large for tmpfs");
+					send_text(conn, 400, "Bad Request", "firmware is missing or too large for tmpfs\n");
+				} else {
+					write_progress_error("cannot write firmware");
+					send_text(conn, 500, "Internal Server Error", "cannot write firmware\n");
+				}
 				return;
 			}
 			remaining -= got;
@@ -629,12 +626,20 @@ static void handle_firmware(struct conn *conn, long length)
 	}
 	fsync(out);
 	close(out);
+	if (prepare_storage() < 0) {
+		unlink(firmware_path);
+		write_progress_error("cannot prepare userdata");
+		send_text(conn, 500, "Internal Server Error", "cannot prepare userdata\n");
+		return;
+	}
 	write_progress("{\"phase\":\"extract\"}\n");
 	if (spawn_command(install_argv) < 0) {
+		unlink(firmware_path);
 		write_progress_error("firmware install failed");
 		send_text(conn, 500, "Internal Server Error", "firmware install failed\n");
 		return;
 	}
+	unlink(firmware_path);
 	write_progress("{\"phase\":\"done\"}\n");
 	send_text(conn, 200, "OK", "firmware installed\n");
 }

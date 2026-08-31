@@ -3,6 +3,7 @@
 
 #include <arpa/inet.h>
 #include <fcntl.h>
+#include <sys/statvfs.h>
 #include <ifaddrs.h>
 #include <net/if.h>
 #include <netinet/in.h>
@@ -221,29 +222,72 @@ int recovery_collect_ipv4(struct recovery_addrs *addrs)
 	return 0;
 }
 
+#define RECOVERY_FIRMWARE_DIR "/tmp"
+#define RECOVERY_FIRMWARE_RESERVE (8LL * 1024 * 1024)
+#define RECOVERY_FIRMWARE_HARD_MAX (128LL * 1024 * 1024)
+
+static long meminfo_available(void)
+{
+	FILE *file;
+	char line[128];
+	long kib = 0;
+
+	file = fopen("/proc/meminfo", "r");
+	if (!file)
+		return 0;
+	while (fgets(line, sizeof(line), file)) {
+		if (sscanf(line, "MemAvailable: %ld kB", &kib) == 1)
+			break;
+		kib = 0;
+	}
+	fclose(file);
+	if (kib <= 0)
+		return 0;
+	return kib * 1024L;
+}
+
+long recovery_firmware_limit(void)
+{
+	struct statvfs vfs;
+	long long available = 0;
+
+	if (statvfs(RECOVERY_FIRMWARE_DIR, &vfs) == 0 && vfs.f_frsize > 0 && vfs.f_blocks > 0)
+		available = (long long)vfs.f_bavail * (long long)vfs.f_frsize;
+	if (available <= 0)
+		available = meminfo_available();
+	if (available <= RECOVERY_FIRMWARE_RESERVE)
+		return 0;
+	available -= RECOVERY_FIRMWARE_RESERVE;
+	if (available > RECOVERY_FIRMWARE_HARD_MAX)
+		available = RECOVERY_FIRMWARE_HARD_MAX;
+	return (long)available;
+}
+
 int recovery_status_json(char *out, size_t size)
 {
 	struct recovery_addrs addrs;
 	size_t used = 0;
 	int i;
+	int n;
+	long firmware_max;
 
-	if (!out || size < 16)
+	if (!out || size < 32)
 		return -1;
 	if (recovery_collect_ipv4(&addrs) < 0)
 		addrs.count = 0;
+	firmware_max = recovery_firmware_limit();
 	used = (size_t)snprintf(out, size, "{\"addresses\":[");
 	if (used >= size)
 		return -1;
 	for (i = 0; i < addrs.count; i++) {
-		int n = snprintf(out + used, size - used, "%s\"%s\"", i ? "," : "", addrs.ip[i]);
-
+		n = snprintf(out + used, size - used, "%s\"%s\"", i ? "," : "", addrs.ip[i]);
 		if (n < 0 || (size_t)n >= size - used)
 			return -1;
 		used += (size_t)n;
 	}
-	if (used + 3 > size)
+	n = snprintf(out + used, size - used, "],\"firmwareMax\":%ld}\n", firmware_max);
+	if (n < 0 || (size_t)n >= size - used)
 		return -1;
-	memcpy(out + used, "]}\n", 4);
 	return 0;
 }
 
@@ -389,5 +433,11 @@ int recovery_render_self_test(void)
 		return 1;
 	if (count_pixels(large, (int)sizeof(large)) < 80)
 		return 1;
+	{
+		long limit = recovery_firmware_limit();
+
+		if (limit < 0 || limit > 128LL * 1024 * 1024)
+			return 1;
+	}
 	return 0;
 }
