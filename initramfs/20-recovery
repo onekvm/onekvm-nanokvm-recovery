@@ -92,6 +92,31 @@ recovery_factory_reset_userdata() {
     msg "OneKVM: userdata erase complete"
 }
 
+recovery_load_payload() {
+    boot=/run/onekvm-recovery-boot
+    mkdir -p "$boot"
+    mount -t vfat -o ro /dev/mmcblk0p1 "$boot" || return 1
+    if [ ! -f "$boot/recovery.zip" ]; then
+        umount "$boot" || true
+        info "OneKVM: recovery.zip is missing from the boot partition"
+        return 1
+    fi
+    if ! unzip -o "$boot/recovery.zip" -d / >/dev/null 2>&1; then
+        umount "$boot" || true
+        info "OneKVM: cannot unpack recovery.zip"
+        return 1
+    fi
+    umount "$boot" || true
+    rmdir "$boot" 2>/dev/null || true
+    chmod 0755 /usr/sbin/onekvm-recovery-web \
+        /usr/sbin/onekvm-recovery-oled \
+        /usr/sbin/onekvm-recovery-sha256 \
+        /usr/sbin/onekvm-recovery-install-fwup \
+        /usr/sbin/onekvm-recovery-prepare-data 2>/dev/null || true
+    chmod 0600 /etc/onekvm-recovery/key.pem 2>/dev/null || true
+    [ -x /usr/sbin/onekvm-recovery-web ]
+}
+
 recovery_load_oled() {
     [ -e /dev/onekvm-oled ] && return 0
     release=$(uname -r 2>/dev/null || true)
@@ -211,6 +236,10 @@ recovery_publish_network() {
 }
 
 recovery_start_web() {
+    if [ ! -x /usr/sbin/onekvm-recovery-web ]; then
+        info "OneKVM: recovery web is not unpacked"
+        return 1
+    fi
     if ! /usr/sbin/onekvm-recovery-web; then
         info "OneKVM: recovery web server exited"
     fi
@@ -260,6 +289,7 @@ recovery_run() {
         return 0
     fi
 
+    recovery_load_payload || info "OneKVM: continuing without recovery web"
     recovery_start_oled
     recovery_start_gadget
     recovery_console
