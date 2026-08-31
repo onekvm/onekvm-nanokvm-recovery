@@ -6,10 +6,12 @@ OneKVM USB recovery and factory-reset support for NanoKVM. It includes the
 initramfs recovery hook, runtime marker commands, recovery console, input
 helper, systemd integration, and a recovery web UI on TCP 80/443.
 
-The initramfs only contains the USB gadget, consoles, and a hook that unpacks
-`recovery.zip` from the FAT `/boot` partition. OpenSSL, the recovery web,
-SHA-256, firmware installer, and the install/recovery OLED `.ko` modules stay
-out of the 16 MiB FIT. The zip is updated with the `.fwup` bundle.
+The initramfs only contains the USB gadget, consoles, and the checks for a
+held BOOT button, `/boot/rec`, or `onekvm_recovery=1`. `recovery.zip` is
+unpacked from the FAT `/boot` partition only after Recovery is entered.
+OpenSSL, the recovery web, SHA-256, firmware installer, and the
+install/recovery OLED `.ko` modules stay out of the 16 MiB FIT. The zip is
+updated with the `.fwup` bundle. Hold BOOT at power-on to enter Recovery.
 
 The recovery web server on TCP 80/443 serves the Recovery UI built by
 `onekvm-ui` (`dist-recovery/`). That page only exposes firmware flash

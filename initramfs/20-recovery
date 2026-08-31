@@ -39,6 +39,11 @@ recovery_requested_by_cmdline() {
     return 1
 }
 
+recovery_boot_button_held() {
+    [ -x /usr/sbin/onekvm-recovery-boot-held ] || return 1
+    /usr/sbin/onekvm-recovery-boot-held
+}
+
 recovery_marker_present() {
     recovery_wait_for /dev/mmcblk0p1 || return 1
 
@@ -94,9 +99,6 @@ recovery_factory_reset_userdata() {
 
 recovery_load_payload() {
     [ -x /usr/sbin/onekvm-recovery-web ] && return 0
-    if type bootzip_unpack >/dev/null 2>&1; then
-        bootzip_unpack && return 0
-    fi
     boot=/run/onekvm-recovery-boot
     mkdir -p "$boot"
     mount -t vfat -o ro /dev/mmcblk0p1 "$boot" || return 1
@@ -105,6 +107,7 @@ recovery_load_payload() {
         info "OneKVM: recovery.zip is missing from the boot partition"
         return 1
     fi
+    msg "OneKVM: unpacking recovery.zip"
     if ! unzip -o "$boot/recovery.zip" -d / >/dev/null 2>&1; then
         umount "$boot" || true
         info "OneKVM: cannot unpack recovery.zip"
@@ -289,8 +292,14 @@ recovery_run() {
     recovery_factory_reset_userdata
 
     if recovery_requested_by_cmdline; then
+        msg "OneKVM: recovery requested on the kernel command line"
         recovery_wait_for /dev/mmcblk0p1 || recovery_die "SD boot partition not found"
-    elif ! recovery_marker_present; then
+    elif recovery_boot_button_held; then
+        msg "OneKVM: BOOT button held, entering recovery"
+        recovery_wait_for /dev/mmcblk0p1 || recovery_die "SD boot partition not found"
+    elif recovery_marker_present; then
+        msg "OneKVM: /boot/rec present, entering recovery"
+    else
         return 0
     fi
 
