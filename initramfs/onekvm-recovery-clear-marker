@@ -1,0 +1,28 @@
+#!/bin/sh
+set -eu
+
+# USB MSC exports the whole card. Release it before touching the boot FAT.
+gadget=/sys/kernel/config/usb_gadget/onekvm-recovery
+if [ -e "$gadget/UDC" ]; then
+    printf '\n' >"$gadget/UDC" || true
+    sleep 1
+fi
+
+[ -b /dev/mmcblk0p1 ] || {
+    echo "SD boot partition not found" >&2
+    exit 1
+}
+
+boot=/run/onekvm-recovery-boot
+mkdir -p "$boot"
+mount -t vfat -o rw /dev/mmcblk0p1 "$boot" || {
+    echo "cannot mount the SD boot partition" >&2
+    exit 1
+}
+rm -f "$boot/rec"
+sync
+umount "$boot" || {
+    echo "cannot unmount the SD boot partition" >&2
+    exit 1
+}
+rmdir "$boot" 2>/dev/null || true

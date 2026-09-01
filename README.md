@@ -7,7 +7,9 @@ initramfs recovery hook, runtime marker commands, recovery console, input
 helper, systemd integration, and a recovery web UI on TCP 80/443.
 
 The initramfs only contains the USB gadget, consoles, and the checks for a
-held BOOT button, `/boot/rec`, or `onekvm_recovery=1`. `recovery.zip` is
+held BOOT button, `/boot/rec`, or `onekvm_recovery=1`. `/boot/rec` is
+consumed after Recovery starts, so the next reboot returns to the normal
+system. `recovery.zip` is
 unpacked from the FAT `/boot` partition only after Recovery is entered.
 OpenSSL, the recovery web, SHA-256, firmware installer, and the
 install/recovery OLED `.ko` modules stay out of the 16 MiB FIT. The zip is

@@ -7,7 +7,8 @@ hook、运行时标记命令、恢复控制台、输入辅助程序、systemd �
 80/443 的恢复网页。
 
 initramfs 只保留 USB gadget、控制台，以及按住 BOOT / `/boot/rec` /
-`onekvm_recovery=1` 的检测。`recovery.zip` 只在真正进入 Recovery 之后才从
+`onekvm_recovery=1` 的检测。`/boot/rec` 是一次性标记，进入 Recovery 后会删掉，
+再重启会回到正常系统。`recovery.zip` 只在真正进入 Recovery 之后才从
 FAT `/boot` 解压。OpenSSL、恢复网页、SHA-256、刷写程序和刷机/恢复 OLED
 `.ko` 不进 16 MiB 的 FIT。zip 随 `.fwup` 一起更新。开机按住 BOOT 键可进入
 Recovery。

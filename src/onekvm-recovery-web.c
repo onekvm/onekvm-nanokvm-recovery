@@ -33,6 +33,7 @@
 #define INSTALL_FWUP "/usr/sbin/onekvm-recovery-install-fwup"
 #define PREPARE_DATA "/usr/sbin/onekvm-recovery-prepare-data"
 #define ERASE_USERDATA "/usr/sbin/onekvm-recovery-erase-userdata"
+#define CLEAR_MARKER "/usr/sbin/onekvm-recovery-clear-marker"
 #define DEFAULT_PROGRESS "/run/onekvm-recovery-progress"
 #define PROGRESS_STEP (512 * 1024)
 
@@ -689,6 +690,7 @@ static void handle_request(struct conn *conn)
 		return;
 	}
 	if (strcmp(path, "/reboot") == 0) {
+		(void)spawn_command((char *const[]){ CLEAR_MARKER, NULL });
 		send_text(conn, 200, "OK", "rebooting\n");
 		if (spawn_command((char *const[]){ "/sbin/reboot", "-f", NULL }) < 0)
 			spawn_command((char *const[]){ "/bin/busybox", "reboot", "-f", NULL });

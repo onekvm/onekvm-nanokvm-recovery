@@ -279,6 +279,8 @@ recovery_run() {
         recovery_wait_for /dev/mmcblk0p1 || recovery_die "SD boot partition not found"
     elif recovery_marker_present; then
         msg "OneKVM: /boot/rec present, entering recovery"
+        /usr/sbin/onekvm-recovery-clear-marker ||
+            info "OneKVM: could not consume /boot/rec; reboot may stay in recovery"
     else
         return 0
     fi
