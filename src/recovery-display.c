@@ -2,14 +2,18 @@
 #include "recovery-display.h"
 
 #include <arpa/inet.h>
+#include <ctype.h>
+#include <dirent.h>
 #include <fcntl.h>
-#include <sys/statvfs.h>
 #include <ifaddrs.h>
 #include <net/if.h>
 #include <netinet/in.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/ioctl.h>
+#include <sys/statvfs.h>
 #include <unistd.h>
 
 #define OLED_CMD_RECOVERY 4
@@ -260,19 +264,156 @@ long recovery_firmware_limit(void)
 	return (long)available;
 }
 
+static int read_sysfs_line(const char *path, char *out, size_t size)
+{
+	FILE *file;
+	size_t length;
+
+	if (!path || !out || size < 2)
+		return -1;
+	file = fopen(path, "r");
+	if (!file)
+		return -1;
+	if (!fgets(out, (int)size, file)) {
+		fclose(file);
+		return -1;
+	}
+	fclose(file);
+	length = strlen(out);
+	while (length && (out[length - 1] == '\n' || out[length - 1] == '\r' ||
+			  out[length - 1] == ' ' || out[length - 1] == '\t'))
+		out[--length] = 0;
+	return length ? 0 : -1;
+}
+
+static int is_mmc_disk(const char *name)
+{
+	const char *cursor;
+
+	if (!name || strncmp(name, "mmcblk", 6) != 0)
+		return 0;
+	cursor = name + 6;
+	if (!*cursor)
+		return 0;
+	while (*cursor) {
+		if (!isdigit((unsigned char)*cursor))
+			return 0;
+		cursor++;
+	}
+	return 1;
+}
+
+static int is_nvme_disk(const char *name)
+{
+	const char *cursor;
+
+	if (!name || strncmp(name, "nvme", 4) != 0 || strchr(name, 'p'))
+		return 0;
+	cursor = name + 4;
+	if (!isdigit((unsigned char)*cursor))
+		return 0;
+	while (isdigit((unsigned char)*cursor))
+		cursor++;
+	if (*cursor != 'n')
+		return 0;
+	cursor++;
+	if (!isdigit((unsigned char)*cursor))
+		return 0;
+	while (isdigit((unsigned char)*cursor))
+		cursor++;
+	return *cursor == 0;
+}
+
+static long long block_bytes(const char *name)
+{
+	char path[128];
+	char line[32];
+	char *end = NULL;
+	unsigned long long sectors;
+
+	if (snprintf(path, sizeof(path), "/sys/class/block/%s/size", name) >= (int)sizeof(path))
+		return 0;
+	if (read_sysfs_line(path, line, sizeof(line)) < 0)
+		return 0;
+	sectors = strtoull(line, &end, 10);
+	if (!end || *end || sectors == 0 || sectors > (~0ULL / 512ULL))
+		return 0;
+	return (long long)(sectors * 512ULL);
+}
+
+static void recovery_storage_info(char *type, size_t type_size, long long *bytes)
+{
+	DIR *dir;
+	struct dirent *entry;
+	char mmc_fallback[32] = { 0 };
+	long long mmc_bytes = 0;
+	long long nvme_bytes = 0;
+
+	if (type && type_size)
+		type[0] = 0;
+	if (bytes)
+		*bytes = 0;
+	dir = opendir("/sys/class/block");
+	if (!dir)
+		return;
+	while ((entry = readdir(dir))) {
+		char path[160];
+		char kind[16];
+
+		if (is_nvme_disk(entry->d_name) && nvme_bytes <= 0)
+			nvme_bytes = block_bytes(entry->d_name);
+		if (!is_mmc_disk(entry->d_name))
+			continue;
+		if (snprintf(path, sizeof(path), "/sys/class/block/%s/device/type",
+			     entry->d_name) >= (int)sizeof(path))
+			continue;
+		if (read_sysfs_line(path, kind, sizeof(kind)) < 0)
+			continue;
+		if (!strcasecmp(kind, "SD")) {
+			if (type && type_size)
+				snprintf(type, type_size, "SD Card");
+			if (bytes)
+				*bytes = block_bytes(entry->d_name);
+			closedir(dir);
+			return;
+		}
+		if (!strcasecmp(kind, "MMC") && !mmc_fallback[0]) {
+			snprintf(mmc_fallback, sizeof(mmc_fallback), "eMMC");
+			mmc_bytes = block_bytes(entry->d_name);
+		}
+	}
+	closedir(dir);
+	if (mmc_fallback[0]) {
+		if (type && type_size)
+			snprintf(type, type_size, "%s", mmc_fallback);
+		if (bytes)
+			*bytes = mmc_bytes;
+		return;
+	}
+	if (nvme_bytes > 0) {
+		if (type && type_size)
+			snprintf(type, type_size, "NVMe");
+		if (bytes)
+			*bytes = nvme_bytes;
+	}
+}
+
 int recovery_status_json(char *out, size_t size)
 {
 	struct recovery_addrs addrs;
+	char storage_type[16] = { 0 };
 	size_t used = 0;
 	int i;
 	int n;
 	long firmware_max;
+	long long storage_bytes = 0;
 
 	if (!out || size < 32)
 		return -1;
 	if (recovery_collect_ipv4(&addrs) < 0)
 		addrs.count = 0;
 	firmware_max = recovery_firmware_limit();
+	recovery_storage_info(storage_type, sizeof(storage_type), &storage_bytes);
 	used = (size_t)snprintf(out, size, "{\"addresses\":[");
 	if (used >= size)
 		return -1;
@@ -282,7 +423,9 @@ int recovery_status_json(char *out, size_t size)
 			return -1;
 		used += (size_t)n;
 	}
-	n = snprintf(out + used, size - used, "],\"firmwareMax\":%ld}\n", firmware_max);
+	n = snprintf(out + used, size - used,
+		     "],\"firmwareMax\":%ld,\"storageType\":\"%s\",\"storageBytes\":%lld}\n",
+		     firmware_max, storage_type, storage_bytes);
 	if (n < 0 || (size_t)n >= size - used)
 		return -1;
 	return 0;
