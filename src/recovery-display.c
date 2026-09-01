@@ -17,6 +17,7 @@
 #include <unistd.h>
 
 #define OLED_CMD_RECOVERY 4
+#define OLED_CMD_OFF 5
 
 static const uint8_t font5x5_az[26][5] = {
 	{ 14, 17, 31, 17, 17 }, { 30, 17, 30, 17, 30 },
@@ -514,6 +515,20 @@ int recovery_oled_canvas(void)
 	if (fd < 0)
 		return -1;
 	if (ioctl(fd, _IO('O', OLED_CMD_RECOVERY), 0) < 0) {
+		close(fd);
+		return -1;
+	}
+	close(fd);
+	return 0;
+}
+
+int recovery_oled_off(void)
+{
+	int fd = oled_open();
+
+	if (fd < 0)
+		return -1;
+	if (ioctl(fd, _IO('O', OLED_CMD_OFF), 0) < 0) {
 		close(fd);
 		return -1;
 	}

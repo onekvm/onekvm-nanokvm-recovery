@@ -22,6 +22,7 @@ int recovery_oled_geometry(int *width, int *pages);
 void recovery_render_status(uint8_t *frame, int width, int pages,
 			    const char *top, const char *bottom);
 int recovery_oled_canvas(void);
+int recovery_oled_off(void);
 int recovery_oled_show_addrs(const struct recovery_addrs *addrs);
 int recovery_render_self_test(void);
 

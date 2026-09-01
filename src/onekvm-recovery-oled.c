@@ -5,7 +5,7 @@
 
 static int usage(void)
 {
-	fprintf(stderr, "usage: onekvm-recovery-oled {canvas|show|print|status|--self-test}\n");
+	fprintf(stderr, "usage: onekvm-recovery-oled {canvas|show|off|print|status|--self-test}\n");
 	return 2;
 }
 
@@ -20,6 +20,8 @@ int main(int argc, char **argv)
 		return recovery_render_self_test();
 	if (!strcmp(argv[1], "canvas"))
 		return recovery_oled_canvas() == 0 ? 0 : 1;
+	if (!strcmp(argv[1], "off"))
+		return recovery_oled_off() == 0 ? 0 : 1;
 	if (!strcmp(argv[1], "show")) {
 		if (recovery_collect_ipv4(&addrs) < 0)
 			addrs.count = 0;

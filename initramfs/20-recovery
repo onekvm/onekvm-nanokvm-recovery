@@ -209,7 +209,6 @@ recovery_publish_network() {
     while :; do
         cur=$(/usr/sbin/onekvm-recovery-oled print 2>/dev/null || true)
         if [ "$cur" != "$last" ]; then
-            /usr/sbin/onekvm-recovery-oled show >/dev/null 2>&1 || true
             [ -z "$cur" ] || {
                 printf '%s' "$cur" >/dev/kmsg
                 printf '%s' "$cur" >/dev/ttyS0 2>/dev/null || true
@@ -217,7 +216,10 @@ recovery_publish_network() {
             }
             last=$cur
         fi
-        sleep 4
+        /usr/sbin/onekvm-recovery-oled show >/dev/null 2>&1 || true
+        sleep 8
+        /usr/sbin/onekvm-recovery-oled off >/dev/null 2>&1 || true
+        sleep 2
     done
 }
 
