@@ -32,6 +32,7 @@
 #define DEFAULT_FIRMWARE "/run/onekvm-firmware/recovery-update.fwup"
 #define INSTALL_FWUP "/usr/sbin/onekvm-recovery-install-fwup"
 #define PREPARE_DATA "/usr/sbin/onekvm-recovery-prepare-data"
+#define ERASE_USERDATA "/usr/sbin/onekvm-recovery-erase-userdata"
 #define DEFAULT_PROGRESS "/run/onekvm-recovery-progress"
 #define PROGRESS_STEP (512 * 1024)
 
@@ -698,6 +699,16 @@ static void handle_request(struct conn *conn)
 			send_text(conn, 500, "Internal Server Error", "cannot reset user\n");
 		else
 			send_text(conn, 200, "OK", "default user reset\n");
+		return;
+	}
+	if (strcmp(path, "/factory-reset") == 0) {
+		if (spawn_command((char *const[]){ ERASE_USERDATA, NULL }) < 0) {
+			send_text(conn, 500, "Internal Server Error", "cannot factory reset\n");
+			return;
+		}
+		send_text(conn, 200, "OK", "factory reset complete\n");
+		if (spawn_command((char *const[]){ "/sbin/reboot", "-f", NULL }) < 0)
+			spawn_command((char *const[]){ "/bin/busybox", "reboot", "-f", NULL });
 		return;
 	}
 	if (strcmp(path, "/firmware") == 0) {

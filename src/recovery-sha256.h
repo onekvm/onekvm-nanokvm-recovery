@@ -17,6 +17,7 @@ void recovery_sha256_update(struct recovery_sha256 *ctx, const void *data, size_
 void recovery_sha256_final(struct recovery_sha256 *ctx, uint8_t digest[32]);
 void recovery_sha256_hex(const uint8_t digest[32], char out[65]);
 int recovery_sha256_file(const char *path, uint64_t byte_limit, char out[65]);
+int recovery_sha256_file_range(const char *path, uint64_t skip, uint64_t byte_limit, char out[65]);
 int recovery_sha256_self_test(void);
 
 #endif

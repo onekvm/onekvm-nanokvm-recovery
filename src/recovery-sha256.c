@@ -139,7 +139,7 @@ void recovery_sha256_hex(const uint8_t digest[32], char out[65])
 	out[64] = 0;
 }
 
-int recovery_sha256_file(const char *path, uint64_t byte_limit, char out[65])
+int recovery_sha256_file_range(const char *path, uint64_t skip, uint64_t byte_limit, char out[65])
 {
 	struct recovery_sha256 ctx;
 	uint8_t digest[32];
@@ -152,6 +152,13 @@ int recovery_sha256_file(const char *path, uint64_t byte_limit, char out[65])
 	fd = strcmp(path, "-") == 0 ? STDIN_FILENO : open(path, O_RDONLY);
 	if (fd < 0)
 		return -1;
+	if (skip) {
+		if (fd == STDIN_FILENO || lseek(fd, (off_t)skip, SEEK_SET) != (off_t)skip) {
+			if (fd != STDIN_FILENO)
+				close(fd);
+			return -1;
+		}
+	}
 	recovery_sha256_init(&ctx);
 	while (remaining) {
 		size_t want = sizeof(buffer);
@@ -177,6 +184,11 @@ int recovery_sha256_file(const char *path, uint64_t byte_limit, char out[65])
 	recovery_sha256_final(&ctx, digest);
 	recovery_sha256_hex(digest, out);
 	return 0;
+}
+
+int recovery_sha256_file(const char *path, uint64_t byte_limit, char out[65])
+{
+	return recovery_sha256_file_range(path, 0, byte_limit, out);
 }
 
 int recovery_sha256_self_test(void)
@@ -206,6 +218,7 @@ int main(int argc, char **argv)
 {
 	char hex[65];
 	const char *path;
+	uint64_t skip = 0;
 	uint64_t limit = ~(uint64_t)0;
 
 	if (argc == 2 && !strcmp(argv[1], "--self-test"))
@@ -215,11 +228,15 @@ int main(int argc, char **argv)
 	} else if (argc == 4 && !strcmp(argv[1], "--bytes")) {
 		limit = (uint64_t)strtoull(argv[2], NULL, 10);
 		path = argv[3];
+	} else if (argc == 6 && !strcmp(argv[1], "--skip") && !strcmp(argv[3], "--bytes")) {
+		skip = (uint64_t)strtoull(argv[2], NULL, 10);
+		limit = (uint64_t)strtoull(argv[4], NULL, 10);
+		path = argv[5];
 	} else {
-		fprintf(stderr, "usage: onekvm-recovery-sha256 [--bytes N] FILE\n");
+		fprintf(stderr, "usage: onekvm-recovery-sha256 [--skip N] [--bytes N] FILE\n");
 		return 2;
 	}
-	if (recovery_sha256_file(path, limit, hex) < 0)
+	if (recovery_sha256_file_range(path, skip, limit, hex) < 0)
 		return 1;
 	printf("%s\n", hex);
 	return 0;

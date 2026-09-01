@@ -70,30 +70,8 @@ recovery_factory_reset_userdata() {
     rmdir "$marker_mount"
     [ "$requested" = true ] || return 0
 
-    recovery_wait_for /dev/mmcblk0p4 || recovery_die "userdata partition not found"
-    [ "$(cat /sys/class/block/mmcblk0p4/partition 2>/dev/null)" = 4 ] ||
-        recovery_die "refusing to erase an unexpected userdata device"
-    userdata_size=$(cat /sys/class/block/mmcblk0p4/size 2>/dev/null) ||
-        recovery_die "cannot read userdata partition size"
-    [ "$userdata_size" -ge 65536 ] ||
-        recovery_die "refusing to erase an undersized userdata partition"
-
     msg "OneKVM: erasing NanoKVM userdata"
-    mkfs.ext4 -F -L userdata \
-        -U 4f4b564d-0000-4000-8000-000000000004 \
-        -m 0 -J size=16 \
-        -O ^orphan_file,^metadata_csum_seed \
-        -E lazy_itable_init=1,lazy_journal_init=1 \
-        /dev/mmcblk0p4 >/dev/null || recovery_die "cannot erase userdata"
-    sync
-
-    mkdir -p "$marker_mount"
-    mount -t vfat -o rw /dev/mmcblk0p1 "$marker_mount" ||
-        recovery_die "cannot remount the SD boot partition"
-    rm -f "$marker_mount/onekvm-factory-reset" "$marker_mount/rec"
-    sync
-    umount "$marker_mount" || recovery_die "cannot unmount the SD boot partition"
-    rmdir "$marker_mount"
+    /usr/sbin/onekvm-recovery-erase-userdata || recovery_die "cannot erase userdata"
     msg "OneKVM: userdata erase complete"
 }
 
@@ -264,7 +242,7 @@ recovery_console() {
     recovery_start_network
     recovery_publish_network &
     recovery_start_web &
-    printf '<6>OneKVM recovery: HTTP 80/443 firmware, reset-user, reboot; USB SD + consoles\n' \
+    printf '<6>OneKVM recovery: HTTP 80/443 firmware, reset-user, factory-reset, reboot; USB SD + consoles\n' \
         >/dev/kmsg
     if recovery_wait_for /dev/ttyGS0; then
         recovery_physical_console &

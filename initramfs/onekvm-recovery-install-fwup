@@ -2,8 +2,18 @@
 set -eu
 
 bundle=${1:-}
+detect_only=false
+if [ "$bundle" = --detect ]; then
+    detect_only=true
+    bundle=${2:-}
+fi
+
 [ -n "$bundle" ] && [ -s "$bundle" ] || {
-    echo "usage: onekvm-recovery-install-fwup BUNDLE" >&2
+    if [ "$detect_only" = true ]; then
+        echo "usage: onekvm-recovery-install-fwup --detect FILE" >&2
+    else
+        echo "usage: onekvm-recovery-install-fwup BUNDLE" >&2
+    fi
     exit 2
 }
 
@@ -11,7 +21,9 @@ progress=${ONEKVM_RECOVERY_PROGRESS:-/run/onekvm-recovery-progress}
 fwroot=/run/onekvm-firmware
 mnt=$fwroot/mnt
 extract=$fwroot/fw-extract
+img_fat=$fwroot/img-boot
 mounted=0
+img_mounted=0
 
 progress_write() {
     printf '%s\n' "$1" >"$progress.tmp" || return 0
@@ -22,184 +34,355 @@ progress_error() {
     if [ "$mounted" = 1 ]; then
         umount "$mnt" 2>/dev/null || true
     fi
+    if [ "$img_mounted" = 1 ]; then
+        umount "$img_fat" 2>/dev/null || true
+    fi
     progress_write '{"phase":"error","message":"firmware install failed"}'
 }
 
-trap progress_error EXIT
-
-# USB mass-storage exports the whole card. Release it before writing slots.
-gadget=/sys/kernel/config/usb_gadget/onekvm-recovery
-if [ -e "$gadget/UDC" ]; then
-    printf '\n' >"$gadget/UDC" || true
-    sleep 1
-fi
-
-magic=$(od -An -tx1 -N4 "$bundle" | tr -d ' \n')
-[ "$magic" = "68737173" ] || {
-    echo "firmware is not an OneKVM .fwup squashfs bundle" >&2
-    exit 1
+onekvm_read_le32() {
+    file=$1
+    offset=$2
+    set -- $(od -An -tu1 -j "$offset" -N4 "$file")
+    [ $# -eq 4 ] || return 1
+    echo $(( $1 + $2 * 256 + $3 * 65536 + $4 * 16777216 ))
 }
 
-work=$extract
-progress_write '{"phase":"extract"}'
-mkdir -p "$mnt"
-if mount -t squashfs -o loop,ro "$bundle" "$mnt" 2>/dev/null; then
-    work=$mnt
-    mounted=1
-else
-    rm -rf "$extract"
-    mkdir -p "$extract"
-    unsquashfs -d "$extract" -f "$bundle" >/dev/null
-fi
-
-rootfs=
-for candidate in "$work"/onekvm-nanokvm-image*.squashfs "$work"/*.rootfs.squashfs; do
-    [ -f "$candidate" ] || continue
-    rootfs=$candidate
-    break
-done
-[ -n "$rootfs" ] || {
-    echo "firmware bundle is missing a rootfs image" >&2
-    exit 1
+onekvm_detect_bundle() {
+    file=$1
+    magic=$(od -An -tx1 -N4 "$file" | tr -d ' \n')
+    if [ "$magic" = "68737173" ]; then
+        printf '%s\n' fwup
+        return 0
+    fi
+    sig=$(od -An -tx1 -j510 -N2 "$file" | tr -d ' \n')
+    [ "$sig" = "55aa" ] || {
+        echo "firmware is not an OneKVM .fwup or installer image" >&2
+        return 1
+    }
+    disk_id=$(od -An -tx1 -j440 -N4 "$file" | tr -d ' \n')
+    [ "$disk_id" = "4d564b4f" ] || {
+        echo "installer image has an unexpected disk id" >&2
+        return 1
+    }
+    printf '%s\n' image
 }
 
-current=A
-for argument in $(cat /proc/cmdline); do
-    case "$argument" in
-        rauc.slot=A|rauc.slot=B) current=${argument#rauc.slot=} ;;
-    esac
-done
-if [ "$current" = A ]; then
-    target=B
-    root_device=/dev/mmcblk0p3
-    bootfile=boot-b.itb
-    fit=$work/onekvm-nanokvm-boot-b-onekvm-nanokvm.itb
-    build_file=build-id-b
-else
-    target=A
-    root_device=/dev/mmcblk0p2
-    bootfile=boot.sd
-    fit=$work/onekvm-nanokvm-boot-a-onekvm-nanokvm.itb
-    build_file=build-id-a
-fi
-[ -s "$fit" ] || {
-    echo "firmware bundle is missing $bootfile" >&2
-    exit 1
+unbind_gadget() {
+    gadget=/sys/kernel/config/usb_gadget/onekvm-recovery
+    if [ -e "$gadget/UDC" ]; then
+        printf '\n' >"$gadget/UDC" || true
+        sleep 1
+    fi
 }
 
 hash_file() {
     /usr/sbin/onekvm-recovery-sha256 "$1"
 }
 
-manifest_sha256() {
-    base=${1##*/}
-    [ -f "$manifest" ] || return 1
-    awk -F= -v want="$base" '
-        BEGIN { found=0 }
-        /^\[/ { found=0 }
-        $1=="filename" && $2==want { found=1 }
-        found && $1=="sha256" { gsub(/\r/, "", $2); print $2; exit }
-    ' "$manifest"
+hash_range() {
+    /usr/sbin/onekvm-recovery-sha256 --skip "$2" --bytes "$3" "$1"
 }
 
-progress_write '{"phase":"verify"}'
-manifest=$work/manifest.raucm
-[ -f "$manifest" ] || {
-    echo "firmware bundle is missing manifest.raucm" >&2
-    exit 1
+write_root_dd() {
+    source=$1
+    skip_blocks=$2
+    dest=$3
+    total=$4
+    dd if="$source" skip="$skip_blocks" of="$dest" bs=512 conv=fsync &
+    ddpid=$!
+    while kill -0 "$ddpid" 2>/dev/null; do
+        written=0
+        if [ -r "/proc/$ddpid/io" ]; then
+            written=$(sed -n 's/^write_bytes:[[:space:]]*//p' "/proc/$ddpid/io")
+            written=$(printf '%s' "$written" | tr -dc '0-9')
+        fi
+        [ -n "$written" ] || written=0
+        progress_write "{\"phase\":\"write-rootfs\",\"received\":$written,\"total\":$total}"
+        sleep 1
+    done
+    wait "$ddpid"
+    sync
 }
-expected=$(manifest_sha256 "$rootfs")
-[ -n "$expected" ] || {
-    echo "firmware manifest is missing the rootfs sha256" >&2
-    exit 1
-}
-actual=$(hash_file "$rootfs")
-[ "$actual" = "$expected" ] || {
-    echo "rootfs sha256 mismatch" >&2
-    exit 1
-}
-fit_expected=$(manifest_sha256 "$fit" || true)
-if [ -n "$fit_expected" ]; then
-    fit_actual=$(hash_file "$fit")
-    [ "$fit_actual" = "$fit_expected" ] || {
-        echo "boot image sha256 mismatch" >&2
+
+install_fwup() {
+    work=$extract
+    progress_write '{"phase":"extract"}'
+    mkdir -p "$mnt"
+    if mount -t squashfs -o loop,ro "$bundle" "$mnt" 2>/dev/null; then
+        work=$mnt
+        mounted=1
+    else
+        rm -rf "$extract"
+        mkdir -p "$extract"
+        unsquashfs -d "$extract" -f "$bundle" >/dev/null
+    fi
+
+    rootfs=
+    for candidate in "$work"/onekvm-nanokvm-image*.squashfs "$work"/*.rootfs.squashfs; do
+        [ -f "$candidate" ] || continue
+        rootfs=$candidate
+        break
+    done
+    [ -n "$rootfs" ] || {
+        echo "firmware bundle is missing a rootfs image" >&2
         exit 1
     }
-fi
 
-total=$(stat -c %s "$rootfs" 2>/dev/null || wc -c <"$rootfs")
-total=$(printf '%s' "$total" | tr -dc '0-9')
-[ -n "$total" ] || total=0
-progress_write "{\"phase\":\"write-rootfs\",\"received\":0,\"total\":$total}"
-dd if="$rootfs" of="$root_device" bs=1M conv=fsync &
-ddpid=$!
-while kill -0 "$ddpid" 2>/dev/null; do
-    written=0
-    if [ -r "/proc/$ddpid/io" ]; then
-        written=$(sed -n 's/^write_bytes:[[:space:]]*//p' "/proc/$ddpid/io")
-        written=$(printf '%s' "$written" | tr -dc '0-9')
+    current=A
+    for argument in $(cat /proc/cmdline); do
+        case "$argument" in
+            rauc.slot=A|rauc.slot=B) current=${argument#rauc.slot=} ;;
+        esac
+    done
+    if [ "$current" = A ]; then
+        target=B
+        root_device=/dev/mmcblk0p3
+        bootfile=boot-b.itb
+        fit=$work/onekvm-nanokvm-boot-b-onekvm-nanokvm.itb
+        build_file=build-id-b
+    else
+        target=A
+        root_device=/dev/mmcblk0p2
+        bootfile=boot.sd
+        fit=$work/onekvm-nanokvm-boot-a-onekvm-nanokvm.itb
+        build_file=build-id-a
     fi
-    [ -n "$written" ] || written=0
-    progress_write "{\"phase\":\"write-rootfs\",\"received\":$written,\"total\":$total}"
-    sleep 1
-done
-wait "$ddpid"
-sync
-written=$(/usr/sbin/onekvm-recovery-sha256 --bytes "$total" "$root_device")
-[ "$written" = "$expected" ] || {
-    echo "written rootfs sha256 mismatch" >&2
-    exit 1
+    [ -s "$fit" ] || {
+        echo "firmware bundle is missing $bootfile" >&2
+        exit 1
+    }
+
+    manifest_sha256() {
+        base=${1##*/}
+        [ -f "$manifest" ] || return 1
+        awk -F= -v want="$base" '
+            BEGIN { found=0 }
+            /^\[/ { found=0 }
+            $1=="filename" && $2==want { found=1 }
+            found && $1=="sha256" { gsub(/\r/, "", $2); print $2; exit }
+        ' "$manifest"
+    }
+
+    progress_write '{"phase":"verify"}'
+    manifest=$work/manifest.raucm
+    [ -f "$manifest" ] || {
+        echo "firmware bundle is missing manifest.raucm" >&2
+        exit 1
+    }
+    expected=$(manifest_sha256 "$rootfs")
+    [ -n "$expected" ] || {
+        echo "firmware manifest is missing the rootfs sha256" >&2
+        exit 1
+    }
+    actual=$(hash_file "$rootfs")
+    [ "$actual" = "$expected" ] || {
+        echo "rootfs sha256 mismatch" >&2
+        exit 1
+    }
+    fit_expected=$(manifest_sha256 "$fit" || true)
+    if [ -n "$fit_expected" ]; then
+        fit_actual=$(hash_file "$fit")
+        [ "$fit_actual" = "$fit_expected" ] || {
+            echo "boot image sha256 mismatch" >&2
+            exit 1
+        }
+    fi
+
+    total=$(stat -c %s "$rootfs" 2>/dev/null || wc -c <"$rootfs")
+    total=$(printf '%s' "$total" | tr -dc '0-9')
+    [ -n "$total" ] || total=0
+    progress_write "{\"phase\":\"write-rootfs\",\"received\":0,\"total\":$total}"
+    write_root_dd "$rootfs" 0 "$root_device" "$total"
+    written=$(/usr/sbin/onekvm-recovery-sha256 --bytes "$total" "$root_device")
+    [ "$written" = "$expected" ] || {
+        echo "written rootfs sha256 mismatch" >&2
+        exit 1
+    }
+    progress_write '{"phase":"write-boot"}'
+
+    boot=/run/onekvm-recovery-boot
+    mkdir -p "$boot"
+    mount -t vfat -o rw /dev/mmcblk0p1 "$boot"
+    cp "$fit" "$boot/$bootfile"
+    if [ -s "$work/onekvm-nanokvm-build-id" ]; then
+        cp "$work/onekvm-nanokvm-build-id" "$boot/$build_file"
+    fi
+    if [ -s "$work/onekvm-recovery.zip" ]; then
+        cp "$work/onekvm-recovery.zip" "$boot/recovery.zip"
+    fi
+    chmod 0644 "$boot/$bootfile" "$boot/$build_file" "$boot/recovery.zip" 2>/dev/null || true
+    sync
+    progress_write '{"phase":"switch"}'
+
+    env_file=$boot/uEnv.txt
+    othbootargs=$(tr -d '\000' <"$env_file" | sed -n 's/^othbootargs=//p')
+    sdboot=$(tr -d '\000' <"$env_file" | sed -n 's/^sdboot=//p')
+    state_a=$(tr -d '\000' <"$env_file" | sed -n 's/^rauc_state_A=//p')
+    state_b=$(tr -d '\000' <"$env_file" | sed -n 's/^rauc_state_B=//p')
+    [ -n "$othbootargs" ] && [ -n "$sdboot" ]
+    [ -n "$state_a" ] || state_a=good
+    [ -n "$state_b" ] || state_b=good
+    if [ "$target" = A ]; then
+        state_a=good
+    else
+        state_b=good
+    fi
+    build_id=$(tr -d '\n' <"$boot/$build_file")
+    umask 077
+    {
+        printf 'boot_slot=%s\n' "$target"
+        printf 'bootfile=%s\n' "$bootfile"
+        printf 'root=root=%s rootfstype=squashfs ro rootwait rauc.slot=%s onekvm.build-id=%s\n' \
+            "$root_device" "$target" "$build_id"
+        printf 'rauc_state_A=%s\n' "$state_a"
+        printf 'rauc_state_B=%s\n' "$state_b"
+        printf 'othbootargs=%s\n' "$othbootargs"
+        printf 'sdboot=%s\n' "$sdboot"
+        printf '\000'
+    } >"$env_file.new"
+    sync
+    mv -f "$env_file.new" "$env_file"
+    sync
+    umount "$boot"
+    rmdir "$boot" 2>/dev/null || true
+    if [ "$mounted" = 1 ]; then
+        umount "$mnt" || true
+        mounted=0
+        rmdir "$mnt" 2>/dev/null || true
+    else
+        rm -rf "$extract"
+    fi
+    echo "installed firmware to slot $target"
 }
-progress_write '{"phase":"write-boot"}'
 
-boot=/run/onekvm-recovery-boot
-mkdir -p "$boot"
-mount -t vfat -o rw /dev/mmcblk0p1 "$boot"
-cp "$fit" "$boot/$bootfile"
-if [ -s "$work/onekvm-nanokvm-build-id" ]; then
-    cp "$work/onekvm-nanokvm-build-id" "$boot/$build_file"
-fi
-chmod 0644 "$boot/$bootfile" "$boot/$build_file" 2>/dev/null || true
-sync
-progress_write '{"phase":"switch"}'
+install_image() {
+    progress_write '{"phase":"verify"}'
+    boot_lba=$(onekvm_read_le32 "$bundle" 454)
+    boot_sectors=$(onekvm_read_le32 "$bundle" 458)
+    root_lba=$(onekvm_read_le32 "$bundle" 470)
+    root_sectors=$(onekvm_read_le32 "$bundle" 474)
+    [ -n "$boot_lba" ] && [ "$boot_lba" -gt 0 ] || {
+        echo "installer image is missing a boot partition" >&2
+        exit 1
+    }
+    [ -n "$root_lba" ] && [ "$root_lba" -gt 0 ] || {
+        echo "installer image is missing a rootfs partition" >&2
+        exit 1
+    }
+    boot_offset=$((boot_lba * 512))
+    boot_bytes=$((boot_sectors * 512))
+    root_offset=$((root_lba * 512))
+    [ "$boot_bytes" -ge 1048576 ] || {
+        echo "installer boot partition is too small" >&2
+        exit 1
+    }
 
-env_file=$boot/uEnv.txt
-othbootargs=$(tr -d '\000' <"$env_file" | sed -n 's/^othbootargs=//p')
-sdboot=$(tr -d '\000' <"$env_file" | sed -n 's/^sdboot=//p')
-state_a=$(tr -d '\000' <"$env_file" | sed -n 's/^rauc_state_A=//p')
-state_b=$(tr -d '\000' <"$env_file" | sed -n 's/^rauc_state_B=//p')
-[ -n "$othbootargs" ] && [ -n "$sdboot" ]
-[ -n "$state_a" ] || state_a=good
-[ -n "$state_b" ] || state_b=good
-if [ "$target" = A ]; then
-    state_a=good
-else
-    state_b=good
+    sq_magic=$(od -An -tx1 -j "$root_offset" -N4 "$bundle" | tr -d ' \n')
+    [ "$sq_magic" = "68737173" ] || {
+        echo "installer image is missing a squashfs rootfs" >&2
+        exit 1
+    }
+    bytes_high=$(onekvm_read_le32 "$bundle" $((root_offset + 44)))
+    [ "$bytes_high" = 0 ] || {
+        echo "installer rootfs is larger than supported" >&2
+        exit 1
+    }
+    total=$(onekvm_read_le32 "$bundle" $((root_offset + 40)))
+    [ -n "$total" ] && [ "$total" -gt 65536 ] || {
+        echo "installer rootfs size is invalid" >&2
+        exit 1
+    }
+    root_bytes=$((root_sectors * 512))
+    [ "$total" -le "$root_bytes" ] || {
+        echo "installer rootfs is larger than its partition" >&2
+        exit 1
+    }
+    [ -b /dev/mmcblk0p2 ] || {
+        echo "rootfs A partition not found" >&2
+        exit 1
+    }
+    [ "$(cat /sys/class/block/mmcblk0p2/partition 2>/dev/null)" = 2 ] || {
+        echo "refusing to write an unexpected rootfs device" >&2
+        exit 1
+    }
+    dest_sectors=$(cat /sys/class/block/mmcblk0p2/size)
+    dest_bytes=$((dest_sectors * 512))
+    [ "$total" -le "$dest_bytes" ] || {
+        echo "installer rootfs is larger than slot A" >&2
+        exit 1
+    }
+
+    expected=$(hash_range "$bundle" "$root_offset" "$total")
+    [ -n "$expected" ] || {
+        echo "cannot hash installer rootfs" >&2
+        exit 1
+    }
+
+    mkdir -p "$img_fat"
+    if ! mount -t vfat -o "loop,ro,offset=$boot_offset,sizelimit=$boot_bytes" \
+        "$bundle" "$img_fat"; then
+        echo "cannot mount installer boot partition" >&2
+        exit 1
+    fi
+    img_mounted=1
+    [ -s "$img_fat/boot.sd" ] && [ -s "$img_fat/uEnv.txt" ] || {
+        echo "installer image is missing boot.sd or uEnv.txt" >&2
+        exit 1
+    }
+
+    progress_write "{\"phase\":\"write-rootfs\",\"received\":0,\"total\":$total}"
+    write_root_dd "$bundle" "$root_lba" /dev/mmcblk0p2 "$total"
+    written=$(/usr/sbin/onekvm-recovery-sha256 --bytes "$total" /dev/mmcblk0p2)
+    [ "$written" = "$expected" ] || {
+        echo "written rootfs sha256 mismatch" >&2
+        exit 1
+    }
+
+    progress_write '{"phase":"write-boot"}'
+    boot=/run/onekvm-recovery-boot
+    mkdir -p "$boot"
+    mount -t vfat -o rw /dev/mmcblk0p1 "$boot" || {
+        echo "cannot mount the SD boot partition" >&2
+        exit 1
+    }
+    for name in boot.sd boot-b.itb recovery.zip uEnv.txt build-id-a build-id-b; do
+        if [ -s "$img_fat/$name" ]; then
+            cp "$img_fat/$name" "$boot/$name"
+            chmod 0644 "$boot/$name" 2>/dev/null || true
+        fi
+    done
+    [ -s "$boot/boot.sd" ] && [ -s "$boot/uEnv.txt" ] || {
+        echo "failed to write installer boot files" >&2
+        exit 1
+    }
+    sync
+    umount "$boot"
+    rmdir "$boot" 2>/dev/null || true
+    umount "$img_fat" || true
+    img_mounted=0
+    rmdir "$img_fat" 2>/dev/null || true
+    progress_write '{"phase":"switch"}'
+    echo "installed complete image to slot A"
+}
+
+kind=$(onekvm_detect_bundle "$bundle")
+if [ "$detect_only" = true ]; then
+    printf '%s\n' "$kind"
+    exit 0
 fi
-build_id=$(tr -d '\n' <"$boot/$build_file")
-umask 077
-{
-    printf 'boot_slot=%s\n' "$target"
-    printf 'bootfile=%s\n' "$bootfile"
-    printf 'root=root=%s rootfstype=squashfs ro rootwait rauc.slot=%s onekvm.build-id=%s\n' \
-        "$root_device" "$target" "$build_id"
-    printf 'rauc_state_A=%s\n' "$state_a"
-    printf 'rauc_state_B=%s\n' "$state_b"
-    printf 'othbootargs=%s\n' "$othbootargs"
-    printf 'sdboot=%s\n' "$sdboot"
-    printf '\000'
-} >"$env_file.new"
-sync
-mv -f "$env_file.new" "$env_file"
-sync
-umount "$boot"
-rmdir "$boot" 2>/dev/null || true
-if [ "$mounted" = 1 ]; then
-    umount "$mnt" || true
-    rmdir "$mnt" 2>/dev/null || true
+
+trap progress_error EXIT
+unbind_gadget
+
+if [ "$kind" = fwup ]; then
+    install_fwup
+elif [ "$kind" = image ]; then
+    install_image
 else
-    rm -rf "$extract"
+    echo "firmware is not an OneKVM .fwup or installer image" >&2
+    exit 1
 fi
+
 progress_write '{"phase":"done"}'
 trap - EXIT
-echo "installed firmware to slot $target"

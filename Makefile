@@ -27,8 +27,12 @@ onekvm-recovery-sha256: $(SHA_SRC)
 
 test: onekvm-recovery-web onekvm-recovery-oled onekvm-recovery-sha256 onekvm-recovery-boot-held
 	sh tests/reset-user-test.sh
+	sh tests/install-detect-test.sh
 	./onekvm-recovery-oled --self-test
 	./onekvm-recovery-sha256 --self-test
+	printf 'xxabc' >.sha-range
+	test "$$(./onekvm-recovery-sha256 --skip 2 --bytes 3 .sha-range)" = ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
+	$(RM) .sha-range
 	./onekvm-recovery-boot-held; test $$? -ne 0
 
 clean:
