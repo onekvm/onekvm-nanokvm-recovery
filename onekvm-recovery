@@ -11,8 +11,14 @@ esac
 [ "$(id -u)" -eq 0 ] || { echo "onekvm-recovery must run as root" >&2; exit 1; }
 mountpoint -q /boot || { echo "/boot is not mounted" >&2; exit 1; }
 
-touch /boot/rec
+mode_file=/boot/nextboot-mode.txt
+mode_tmp=/boot/.nextboot-mode.$$
+trap 'rm -f "$mode_tmp"' EXIT HUP INT TERM
+printf '%s\n' recovery >"$mode_tmp"
 sync
+mv -f "$mode_tmp" "$mode_file"
+sync
+trap - EXIT HUP INT TERM
 echo "OneKVM recovery requested"
 
 if [ "$reboot_after" = true ]; then

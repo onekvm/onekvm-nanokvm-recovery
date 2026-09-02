@@ -44,35 +44,44 @@ recovery_boot_button_held() {
     /usr/sbin/onekvm-recovery-boot-held
 }
 
-recovery_marker_present() {
-    recovery_wait_for /dev/mmcblk0p1 || return 1
-
-    marker_mount=/run/onekvm-recovery-boot
-    mkdir -p "$marker_mount"
-    mount -t vfat -o ro /dev/mmcblk0p1 "$marker_mount" || return 1
-    marker=false
-    [ ! -e "$marker_mount/rec" ] || marker=true
-    umount "$marker_mount" || recovery_die "cannot unmount the SD boot partition"
-    rmdir "$marker_mount"
-    [ "$marker" = true ]
+recovery_parse_nextboot_mode_file() {
+    mode_file=$1
+    mode=
+    if [ -f "$mode_file" ]; then
+        # Read only the first line. A trailing CR is accepted so a file written
+        # by Windows with CRLF has the same meaning as the LF file we emit.
+        IFS= read -r mode <"$mode_file" || true
+        mode=$(printf '%s' "$mode" | tr -d '\r')
+    fi
+    case "$mode" in
+        recovery|factory-reset) printf '%s\n' "$mode" ;;
+        '') ;;
+        *) info "OneKVM: ignoring unknown next boot mode: $mode" ;;
+    esac
 }
 
-recovery_factory_reset_userdata() {
+recovery_read_nextboot_mode() {
     recovery_wait_for /dev/mmcblk0p1 || recovery_die "SD boot partition not found"
 
-    marker_mount=/run/onekvm-recovery-boot
-    mkdir -p "$marker_mount"
-    mount -t vfat -o ro /dev/mmcblk0p1 "$marker_mount" ||
+    mode_mount=/run/onekvm-recovery-boot
+    mkdir -p "$mode_mount"
+    mount -t vfat -o ro /dev/mmcblk0p1 "$mode_mount" ||
         recovery_die "cannot mount the SD boot partition"
-    requested=false
-    [ ! -e "$marker_mount/onekvm-factory-reset" ] || requested=true
-    umount "$marker_mount" || recovery_die "cannot unmount the SD boot partition"
-    rmdir "$marker_mount"
-    [ "$requested" = true ] || return 0
+    mode=$(recovery_parse_nextboot_mode_file "$mode_mount/nextboot-mode.txt")
+    umount "$mode_mount" || recovery_die "cannot unmount the SD boot partition"
+    rmdir "$mode_mount"
+    printf '%s\n' "$mode"
+}
 
-    msg "OneKVM: erasing NanoKVM userdata"
-    /usr/sbin/onekvm-recovery-erase-userdata || recovery_die "cannot erase userdata"
-    msg "OneKVM: userdata erase complete"
+recovery_consume_nextboot_mode() {
+    /usr/sbin/onekvm-recovery-clear-marker ||
+        recovery_die "cannot consume /boot/nextboot-mode.txt"
+}
+
+recovery_assert_sd_unmounted() {
+    if grep -q '^/dev/mmcblk0p[1-4] ' /proc/mounts; then
+        recovery_die "an SD partition is still mounted before Recovery services start"
+    fi
 }
 
 recovery_load_payload() {
@@ -269,23 +278,34 @@ recovery_usb_console() {
 }
 
 recovery_run() {
-    recovery_factory_reset_userdata
+    nextboot_mode=$(recovery_read_nextboot_mode)
+
+    if [ "$nextboot_mode" = factory-reset ]; then
+        msg "OneKVM: factory reset requested by /boot/nextboot-mode.txt"
+        recovery_consume_nextboot_mode
+        msg "OneKVM: erasing NanoKVM userdata"
+        /usr/sbin/onekvm-recovery-erase-userdata || recovery_die "cannot erase userdata"
+        msg "OneKVM: userdata erase complete"
+        return 0
+    fi
 
     if recovery_requested_by_cmdline; then
         msg "OneKVM: recovery requested on the kernel command line"
+        [ -z "$nextboot_mode" ] || recovery_consume_nextboot_mode
         recovery_wait_for /dev/mmcblk0p1 || recovery_die "SD boot partition not found"
     elif recovery_boot_button_held; then
         msg "OneKVM: BOOT button held, entering recovery"
+        [ -z "$nextboot_mode" ] || recovery_consume_nextboot_mode
         recovery_wait_for /dev/mmcblk0p1 || recovery_die "SD boot partition not found"
-    elif recovery_marker_present; then
-        msg "OneKVM: /boot/rec present, entering recovery"
-        /usr/sbin/onekvm-recovery-clear-marker ||
-            info "OneKVM: could not consume /boot/rec; reboot may stay in recovery"
+    elif [ "$nextboot_mode" = recovery ]; then
+        msg "OneKVM: recovery requested by /boot/nextboot-mode.txt"
+        recovery_consume_nextboot_mode
     else
         return 0
     fi
 
     recovery_load_payload || info "OneKVM: continuing without recovery web"
+    recovery_assert_sd_unmounted
     recovery_start_oled
     recovery_start_gadget
     recovery_console

@@ -19,7 +19,7 @@ mount -t vfat -o rw /dev/mmcblk0p1 "$boot" || {
     echo "cannot mount the SD boot partition" >&2
     exit 1
 }
-rm -f "$boot/rec"
+rm -f "$boot/nextboot-mode.txt"
 sync
 umount "$boot" || {
     echo "cannot unmount the SD boot partition" >&2

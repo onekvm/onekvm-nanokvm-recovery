@@ -11,8 +11,14 @@ esac
 [ "$(id -u)" -eq 0 ] || { echo "onekvm-factory-reset must run as root" >&2; exit 1; }
 mountpoint -q /boot || { echo "/boot is not mounted" >&2; exit 1; }
 
-touch /boot/onekvm-factory-reset
+mode_file=/boot/nextboot-mode.txt
+mode_tmp=/boot/.nextboot-mode.$$
+trap 'rm -f "$mode_tmp"' EXIT HUP INT TERM
+printf '%s\n' factory-reset >"$mode_tmp"
 sync
+mv -f "$mode_tmp" "$mode_file"
+sync
+trap - EXIT HUP INT TERM
 echo "OneKVM factory reset requested"
 
 if [ "$reboot_after" = true ]; then

@@ -6,10 +6,12 @@ OneKVM 面向 NanoKVM 的 USB 恢复和恢复出厂设置支持，包括 initram
 hook、运行时标记命令、恢复控制台、输入辅助程序、systemd 集成，以及监听
 80/443 的恢复网页。
 
-initramfs 只保留 USB gadget、控制台，以及按住 BOOT / `/boot/rec` /
-`onekvm_recovery=1` 的检测。`/boot/rec` 是一次性标记，进入 Recovery 后会删掉，
-再重启会回到正常系统。`recovery.zip` 只在真正进入 Recovery 之后才从
-FAT `/boot` 解压。OpenSSL、恢复网页、SHA-256、刷写程序和刷机/恢复 OLED
+initramfs 只保留 USB gadget、控制台，以及按住 BOOT、
+`/boot/nextboot-mode.txt` 或 `onekvm_recovery=1` 的检测。启动模式文件第一行可为
+`recovery` 或 `factory-reset`，LF 与 Windows CRLF 均可；有效模式会在执行前消费，
+避免重启后重复执行。`recovery.zip` 只在真正进入 Recovery 之后才从 FAT `/boot`
+短暂只读挂载并解压，Recovery 服务启动前会再次确认 SD 分区均未挂载。
+OpenSSL、恢复网页、SHA-256、刷写程序和刷机/恢复 OLED
 `.ko` 不进 16 MiB 的 FIT。zip 随 `.fwup` 一起更新。开机按住 BOOT 键可进入
 Recovery。
 
@@ -21,6 +23,9 @@ U-Boot/FIP。拿到 DHCP 地址后，OLED 通过 C906L（`/dev/onekvm-oled`）�
 不依赖可能已经损坏的 userdata。文件不能超过这块 tmpfs 的剩余空间。上传时计算 SHA-256，对照
 `manifest.raucm` 校验镜像，写入槽后再核对 rootfs。串口/USB 控制台和
 USB 大容量存储仍然可用。
+
+initramfs 的模块顺序、启动分支、分区挂载边界和构建入口见
+[initramfs 流程引导](docs/initramfs-flow.zh-CN.md)。
 
 ## 编译
 

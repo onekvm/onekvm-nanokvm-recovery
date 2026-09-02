@@ -39,18 +39,4 @@ mkfs.ext4 -F -L userdata \
     -E lazy_itable_init=1,lazy_journal_init=1 \
     /dev/mmcblk0p4 >/dev/null
 sync
-
-boot=/run/onekvm-recovery-boot
-mkdir -p "$boot"
-mount -t vfat -o rw /dev/mmcblk0p1 "$boot" || {
-    echo "cannot mount the SD boot partition" >&2
-    exit 1
-}
-rm -f "$boot/onekvm-factory-reset" "$boot/rec"
-sync
-umount "$boot" || {
-    echo "cannot unmount the SD boot partition" >&2
-    exit 1
-}
-rmdir "$boot" 2>/dev/null || true
 echo "userdata erased"

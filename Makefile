@@ -28,6 +28,7 @@ onekvm-recovery-sha256: $(SHA_SRC)
 test: onekvm-recovery-web onekvm-recovery-oled onekvm-recovery-sha256 onekvm-recovery-boot-held
 	sh tests/reset-user-test.sh
 	sh tests/install-detect-test.sh
+	sh tests/nextboot-mode-test.sh
 	./onekvm-recovery-oled --self-test
 	./onekvm-recovery-oled status | grep storageBytes
 	./onekvm-recovery-sha256 --self-test
