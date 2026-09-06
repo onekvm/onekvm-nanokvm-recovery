@@ -185,14 +185,15 @@ Recovery 空闲状态仍会挂载以下非 SD 文件系统：
 
 ```sh
 cd onekvm-distro
-make nanokvm-sd
+make image sd
 ```
 
 完整 NanoKVM 产物使用：
 
 ```sh
 cd onekvm-distro
-make nanokvm-build
+make firmware
+make image sd
 ```
 
 相关配方为：

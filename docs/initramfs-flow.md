@@ -190,10 +190,10 @@ target artifacts outside it:
 
 ```sh
 cd onekvm-distro
-make nanokvm-sd
+make image sd
 ```
 
-Use `make nanokvm-build` for the complete NanoKVM output. The relevant recipes
+Use `make firmware` then `make image sd` for the complete NanoKVM output. The relevant recipes
 are:
 
 - `meta-onekvm/recipes-core/images/onekvm-initramfs.bb`
