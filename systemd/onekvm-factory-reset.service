@@ -1,7 +1,7 @@
 [Unit]
 Description=Restore OneKVM NanoKVM factory settings
-Requires=onekvm-device-nanokvm-storage.service
-After=onekvm-device-nanokvm-storage.service
+Requires=onekvm-storage-links.service
+After=onekvm-storage-links.service
 ConditionPathIsMountPoint=/boot
 
 [Service]

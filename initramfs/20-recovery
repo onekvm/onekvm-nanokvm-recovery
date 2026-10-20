@@ -60,14 +60,31 @@ recovery_parse_nextboot_mode_file() {
     esac
 }
 
+recovery_copy_nextboot_network() {
+    network_mode_file=$1
+    network_dest=$2
+    rm -f "$network_dest"
+    [ -f "$network_mode_file" ] || return 0
+    [ "$(wc -c <"$network_mode_file")" -le 8192 ] || return 0
+    # JSON is data, never shell input. Keep the copy bounded before parsing.
+    dd if="$network_mode_file" bs=8192 count=1 2>/dev/null |
+        awk 'NR == 2 { print; exit }' >"$network_dest"
+    if [ "$(wc -c <"$network_dest")" -gt 4096 ] || [ ! -s "$network_dest" ]; then
+        rm -f "$network_dest"
+    fi
+}
+
 recovery_read_nextboot_mode() {
-    recovery_wait_for /dev/mmcblk0p1 || recovery_die "SD boot partition not found"
+    recovery_wait_for "$loader" || recovery_die "SD boot partition not found"
 
     mode_mount=/run/onekvm-recovery-boot
     mkdir -p "$mode_mount"
-    mount -t vfat -o ro /dev/mmcblk0p1 "$mode_mount" ||
+    mount -t vfat -o ro "$loader" "$mode_mount" ||
         recovery_die "cannot mount the SD boot partition"
     mode=$(recovery_parse_nextboot_mode_file "$mode_mount/nextboot-mode.txt")
+    if [ "$mode" = recovery ]; then
+        recovery_copy_nextboot_network "$mode_mount/nextboot-mode.txt" /run/onekvm-recovery-network.once
+    fi
     umount "$mode_mount" || recovery_die "cannot unmount the SD boot partition"
     rmdir "$mode_mount"
     printf '%s\n' "$mode"
@@ -78,17 +95,62 @@ recovery_consume_nextboot_mode() {
         recovery_die "cannot consume /boot/nextboot-mode.txt"
 }
 
+# Count only normal boot attempts, before either rootfs or userdata is mounted.
+# Each durable line is one attempt; a torn/malformed record requires Recovery.
+recovery_record_boot_attempt() {
+    retry_limit=10
+    retry_mount=${1:-/run/onekvm-boot-retry}
+    mkdir -p "$retry_mount" || return 1
+    if ! mount -t vfat -o rw "$loader" "$retry_mount"; then
+        info "OneKVM: cannot mount boot partition to record boot attempt"
+        rmdir "$retry_mount" 2>/dev/null || true
+        return 1
+    fi
+    retry_file=$retry_mount/boot_retry_time.txt
+    retry_count=$retry_limit
+    if printf '1\n' >>"$retry_file"; then
+        sync
+        retry_count=$(awk -v limit="$retry_limit" '
+            { sub(/\r$/, ""); if ($0 != "1") invalid=1; count++ }
+            END { if (invalid) print limit; else print count }
+        ' "$retry_file") || retry_count=$retry_limit
+    else
+        info "OneKVM: cannot record boot attempt"
+    fi
+    umount "$retry_mount" || recovery_die "cannot unmount boot retry partition"
+    rmdir "$retry_mount" 2>/dev/null || true
+    retry_message="OneKVM: boot attempt $retry_count/$retry_limit"
+    # Let printk keep this in dmesg and apply the console log level. Fall back
+    # to the initramfs console when the kernel log device is unavailable.
+    if [ -c /dev/kmsg ] && { printf '<6>%s\n' "$retry_message" >/dev/kmsg; } 2>/dev/null; then
+        :
+    else
+        msg "$retry_message"
+    fi
+    [ "$retry_count" -lt "$retry_limit" ]
+}
+
 recovery_assert_sd_unmounted() {
-    if grep -q '^/dev/mmcblk0p[1-4] ' /proc/mounts; then
+    if awk -v prefix="${disk}p" '$1 ~ ("^" prefix "[1-4]$") { found=1 } END { exit !found }' /proc/mounts; then
         recovery_die "an SD partition is still mounted before Recovery services start"
     fi
 }
 
 recovery_load_payload() {
-    [ -x /usr/sbin/onekvm-recovery-web ] && return 0
     boot=/run/onekvm-recovery-boot
     mkdir -p "$boot"
-    mount -t vfat -o ro /dev/mmcblk0p1 "$boot" || return 1
+    mount -t vfat -o ro "$loader" "$boot" || return 1
+    # Copy only bounded data before exposing the SD as writable USB storage.
+    # A missing payload must not prevent reading the network snapshot.
+    for entry in recovery-network.json recovery-network.json.bak; do
+        [ -f "$boot/$entry" ] || continue
+        size=$(wc -c <"$boot/$entry")
+        [ "$size" -le 4096 ] || continue
+        case "$entry" in
+            *.bak) cp "$boot/$entry" /run/onekvm-recovery-network.backup ;;
+            *) cp "$boot/$entry" /run/onekvm-recovery-network.boot ;;
+        esac
+    done
     if [ ! -f "$boot/recovery.zip" ]; then
         umount "$boot" || true
         info "OneKVM: recovery.zip is missing from the boot partition"
@@ -101,6 +163,14 @@ recovery_load_payload() {
         return 1
     fi
     umount "$boot" || true
+    if [ -f /usr/share/onekvm-recovery/tools.tar.xz ]; then
+        tar -C / -xJf /usr/share/onekvm-recovery/tools.tar.xz || return 1
+        rm -f /usr/share/onekvm-recovery/tools.tar.xz
+    fi
+    if [ -f /usr/share/onekvm-recovery/tools.tar.gz ]; then
+        tar -C / -xzf /usr/share/onekvm-recovery/tools.tar.gz || return 1
+        rm -f /usr/share/onekvm-recovery/tools.tar.gz
+    fi
     rmdir "$boot" 2>/dev/null || true
     chmod 0755 /usr/sbin/onekvm-recovery-web \
         /usr/sbin/onekvm-recovery-oled \
@@ -113,6 +183,12 @@ recovery_load_payload() {
 }
 
 recovery_load_oled() {
+    if [ "$storage_media" != nanokvm ]; then
+        insmod /usr/lib/onekvm-initramfs/fbtft.ko 2>/dev/null || true
+        insmod /usr/lib/onekvm-initramfs/fb_jd9853.ko 2>/dev/null || true
+        recovery_wait_for /dev/fb0
+        return $?
+    fi
     [ -e /dev/onekvm-oled ] && return 0
     release=$(uname -r 2>/dev/null || true)
     if [ -n "$release" ] && [ -f "/lib/modules/${release}/extra/onekvm/onekvm_oled.ko" ]; then
@@ -127,7 +203,7 @@ recovery_load_oled() {
 
 recovery_start_oled() {
     if recovery_load_oled && /usr/sbin/onekvm-recovery-oled canvas 2>/dev/null; then
-        msg "OneKVM: Recovery OLED via C906L"
+        msg "OneKVM: Recovery display ready"
         return
     fi
     if insmod /usr/lib/onekvm-initramfs/onekvm-installing-oled.ko \
@@ -139,7 +215,7 @@ recovery_start_oled() {
 }
 
 recovery_start_gadget() {
-    recovery_wait_for /dev/mmcblk0 || recovery_die "SD card not found"
+    recovery_wait_for "$disk" || recovery_die "SD card not found"
 
     mkdir -p /sys/kernel/config
     if ! grep -q ' /sys/kernel/config configfs ' /proc/mounts; then
@@ -170,24 +246,31 @@ recovery_start_gadget() {
     printf '%s\n' 250 >configs/c.1/MaxPower
     printf '%s\n' 'SD card and root console' >configs/c.1/strings/0x409/configuration
 
-    mkdir functions/mass_storage.sd || recovery_die "cannot create mass-storage function"
-    printf '%s\n' 0 >functions/mass_storage.sd/lun.0/ro
-    printf '%s\n' 0 >functions/mass_storage.sd/lun.0/removable
-    printf '%s\n' 0 >functions/mass_storage.sd/lun.0/cdrom
-    printf '%s\n' 'OneKVM SD Recovery' >functions/mass_storage.sd/lun.0/inquiry_string
-    printf '%s\n' /dev/mmcblk0 >functions/mass_storage.sd/lun.0/file || \
-        recovery_die "cannot export the SD card"
-    ln -s functions/mass_storage.sd configs/c.1/ || \
-        recovery_die "cannot attach mass-storage function"
+    if [ "$storage_media" != pro-emmc ]; then
+        mkdir functions/mass_storage.sd || recovery_die "cannot create mass-storage function"
+        printf '%s\n' 0 >functions/mass_storage.sd/lun.0/ro
+        printf '%s\n' 0 >functions/mass_storage.sd/lun.0/removable
+        printf '%s\n' 0 >functions/mass_storage.sd/lun.0/cdrom
+        printf '%s\n' 'OneKVM SD Recovery' >functions/mass_storage.sd/lun.0/inquiry_string
+        printf '%s\n' "$disk" >functions/mass_storage.sd/lun.0/file || \
+            recovery_die "cannot export the SD card"
+        ln -s functions/mass_storage.sd configs/c.1/ || \
+            recovery_die "cannot attach mass-storage function"
+
+    fi
 
     mkdir functions/acm.GS0 || recovery_die "cannot create CDC ACM function"
     ln -s functions/acm.GS0 configs/c.1/ || \
         recovery_die "cannot attach CDC ACM function"
 
-    recovery_wait_for /proc/cviusb/otg_role || \
-        recovery_die "USB role control is unavailable"
-    printf '%s\n' device >/proc/cviusb/otg_role || \
-        recovery_die "cannot select USB device mode"
+    if [ -e /proc/cviusb/otg_role ]; then
+        printf '%s\n' device >/proc/cviusb/otg_role || recovery_die "cannot select USB device mode"
+    else
+        for role in /sys/class/usb_role/*/role; do
+            [ -e "$role" ] || continue
+            printf '%s\n' device >"$role" || recovery_die "cannot select USB device mode"
+        done
+    fi
 
     udc=$(recovery_wait_for_udc) || recovery_die "USB device controller not found"
     printf '%s\n' "$udc" >UDC || recovery_die "cannot bind USB gadget"
@@ -204,17 +287,26 @@ recovery_prepare_firmware_tmpfs() {
 }
 
 recovery_start_network() {
+    if [ -x /usr/sbin/onekvm-recovery-network ]; then
+        /usr/sbin/onekvm-recovery-network --boot || info "OneKVM: Recovery network setup failed; use the console"
+        return
+    fi
     for iface in /sys/class/net/*; do
         name=${iface##*/}
-        [ "$name" = lo ] && continue
+        [ -d "$iface/device" ] && [ ! -d "$iface/wireless" ] || continue
         ip link set "$name" up 2>/dev/null || ifconfig "$name" up 2>/dev/null || continue
-        udhcpc -i "$name" -b -t 12 -T 2 >/dev/null 2>&1 || \
-            udhcpc -i "$name" -n -q -t 6 -T 1 >/dev/null 2>&1 || true
+        ip -4 addr add 192.168.233.10/24 dev "$name" 2>/dev/null || true
+        udhcpc -i "$name" -f -t 12 -T 2 >/dev/null 2>&1 &
+        break
     done
 }
 
 recovery_publish_network() {
     last=
+    panel=
+    if [ -r /sys/class/graphics/fb0/name ]; then
+        read -r panel </sys/class/graphics/fb0/name || true
+    fi
     while :; do
         cur=$(/usr/sbin/onekvm-recovery-oled print 2>/dev/null || true)
         if [ "$cur" != "$last" ]; then
@@ -224,6 +316,15 @@ recovery_publish_network() {
                 printf '%s' "$cur" >/etc/issue
             }
             last=$cur
+            if [ "$panel" = fb_jd9853 ]; then
+                /usr/sbin/onekvm-recovery-oled show >/dev/null 2>&1 || true
+            fi
+        fi
+        # Keep the Pro's full-color status visible. Only redraw changed
+        # addresses; the monochrome OLEDs retain their burn-in protection.
+        if [ "$panel" = fb_jd9853 ]; then
+            sleep 2
+            continue
         fi
         /usr/sbin/onekvm-recovery-oled show >/dev/null 2>&1 || true
         sleep 8
@@ -278,6 +379,8 @@ recovery_usb_console() {
 }
 
 recovery_run() {
+    . /usr/lib/onekvm/storage-layout.sh
+    onekvm_storage_links || recovery_die "cannot identify and validate boot medium"
     nextboot_mode=$(recovery_read_nextboot_mode)
 
     if [ "$nextboot_mode" = factory-reset ]; then
@@ -286,20 +389,25 @@ recovery_run() {
         msg "OneKVM: erasing NanoKVM userdata"
         /usr/sbin/onekvm-recovery-erase-userdata || recovery_die "cannot erase userdata"
         msg "OneKVM: userdata erase complete"
+        /usr/sbin/onekvm-recovery-clear-marker --boot-retry ||
+            recovery_die "cannot reset boot attempts after factory reset"
+        recovery_record_boot_attempt || recovery_die "cannot record boot attempt after factory reset"
         return 0
     fi
 
     if recovery_requested_by_cmdline; then
         msg "OneKVM: recovery requested on the kernel command line"
         [ -z "$nextboot_mode" ] || recovery_consume_nextboot_mode
-        recovery_wait_for /dev/mmcblk0p1 || recovery_die "SD boot partition not found"
+        recovery_wait_for "$loader" || recovery_die "SD boot partition not found"
     elif recovery_boot_button_held; then
         msg "OneKVM: BOOT button held, entering recovery"
         [ -z "$nextboot_mode" ] || recovery_consume_nextboot_mode
-        recovery_wait_for /dev/mmcblk0p1 || recovery_die "SD boot partition not found"
+        recovery_wait_for "$loader" || recovery_die "SD boot partition not found"
     elif [ "$nextboot_mode" = recovery ]; then
         msg "OneKVM: recovery requested by /boot/nextboot-mode.txt"
         recovery_consume_nextboot_mode
+    elif ! recovery_record_boot_attempt; then
+        msg "OneKVM: boot retry limit reached or counter unavailable, entering recovery"
     else
         return 0
     fi

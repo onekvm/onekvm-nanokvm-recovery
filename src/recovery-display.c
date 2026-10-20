@@ -4,7 +4,9 @@
 #include <arpa/inet.h>
 #include <ctype.h>
 #include <dirent.h>
+#include <errno.h>
 #include <fcntl.h>
+#include <linux/fb.h>
 #include <ifaddrs.h>
 #include <net/if.h>
 #include <netinet/in.h>
@@ -15,6 +17,9 @@
 #include <sys/ioctl.h>
 #include <sys/statvfs.h>
 #include <unistd.h>
+#include <time.h>
+
+#include "../display/assets.h"
 
 #define OLED_CMD_RECOVERY 4
 #define OLED_CMD_OFF 5
@@ -304,27 +309,6 @@ static int is_mmc_disk(const char *name)
 	return 1;
 }
 
-static int is_nvme_disk(const char *name)
-{
-	const char *cursor;
-
-	if (!name || strncmp(name, "nvme", 4) != 0 || strchr(name, 'p'))
-		return 0;
-	cursor = name + 4;
-	if (!isdigit((unsigned char)*cursor))
-		return 0;
-	while (isdigit((unsigned char)*cursor))
-		cursor++;
-	if (*cursor != 'n')
-		return 0;
-	cursor++;
-	if (!isdigit((unsigned char)*cursor))
-		return 0;
-	while (isdigit((unsigned char)*cursor))
-		cursor++;
-	return *cursor == 0;
-}
-
 static long long block_bytes(const char *name)
 {
 	char path[128];
@@ -344,59 +328,59 @@ static long long block_bytes(const char *name)
 
 static void recovery_storage_info(char *type, size_t type_size, long long *bytes)
 {
-	DIR *dir;
-	struct dirent *entry;
-	char mmc_fallback[32] = { 0 };
-	long long mmc_bytes = 0;
-	long long nvme_bytes = 0;
+    char device[128], path[192], kind[16];
+    char *name, *partition;
+    ssize_t length;
+    if (type && type_size) type[0] = 0;
+    if (bytes) *bytes = 0;
+    /* The shared storage resolver identifies the root medium, even with both
+     * SD and eMMC present. Unknown types stay hidden. */
+    length = readlink("/dev/onekvm-rootfs-a", device, sizeof(device) - 1);
+    if (length <= 0) return;
+    device[length] = 0;
+    name = strrchr(device, '/');
+    name = name ? name + 1 : device;
+    partition = strrchr(name, 'p');
+    if (!partition) return;
+    *partition = 0;
+    if (!is_mmc_disk(name)) return;
+    snprintf(path, sizeof(path), "/sys/class/block/%s/device/type", name);
+    if (read_sysfs_line(path, kind, sizeof(kind)) < 0) return;
+    if (!strcmp(kind, "SD")) snprintf(type, type_size, "SD Card");
+    else if (!strcmp(kind, "MMC")) snprintf(type, type_size, "eMMC");
+    else return;
+    if (bytes) *bytes = block_bytes(name);
+}
 
-	if (type && type_size)
-		type[0] = 0;
-	if (bytes)
-		*bytes = 0;
-	dir = opendir("/sys/class/block");
-	if (!dir)
-		return;
-	while ((entry = readdir(dir))) {
-		char path[160];
-		char kind[16];
-
-		if (is_nvme_disk(entry->d_name) && nvme_bytes <= 0)
-			nvme_bytes = block_bytes(entry->d_name);
-		if (!is_mmc_disk(entry->d_name))
-			continue;
-		if (snprintf(path, sizeof(path), "/sys/class/block/%s/device/type",
-			     entry->d_name) >= (int)sizeof(path))
-			continue;
-		if (read_sysfs_line(path, kind, sizeof(kind)) < 0)
-			continue;
-		if (!strcasecmp(kind, "SD")) {
-			if (type && type_size)
-				snprintf(type, type_size, "SD Card");
-			if (bytes)
-				*bytes = block_bytes(entry->d_name);
-			closedir(dir);
-			return;
-		}
-		if (!strcasecmp(kind, "MMC") && !mmc_fallback[0]) {
-			snprintf(mmc_fallback, sizeof(mmc_fallback), "eMMC");
-			mmc_bytes = block_bytes(entry->d_name);
-		}
-	}
-	closedir(dir);
-	if (mmc_fallback[0]) {
-		if (type && type_size)
-			snprintf(type, type_size, "%s", mmc_fallback);
-		if (bytes)
-			*bytes = mmc_bytes;
-		return;
-	}
-	if (nvme_bytes > 0) {
-		if (type && type_size)
-			snprintf(type, type_size, "NVMe");
-		if (bytes)
-			*bytes = nvme_bytes;
-	}
+struct network_display {
+    char mode[16], source[16], address[32], fallback[32];
+};
+static struct network_display network_display_read(void)
+{
+    struct network_display value = { "dhcp", "fallback", "-", "-" };
+    FILE *file = fopen("/run/onekvm-recovery-network.display", "r");
+    if (file) {
+        char mode[16], source[16], address[32], fallback[32];
+        if (fscanf(file, "%15s%15s%31s%31s", mode, source, address, fallback) == 4) {
+            if (!strcmp(mode, "static") || !strcmp(mode, "dhcp")) strcpy(value.mode, mode);
+            if (!strcmp(source, "system") || !strcmp(source, "custom") || !strcmp(source, "session") || !strcmp(source, "fallback")) strcpy(value.source, source);
+            strcpy(value.address, address); strcpy(value.fallback, fallback);
+            value.address[strcspn(value.address, "/")] = 0;
+            value.fallback[strcspn(value.fallback, "/")] = 0;
+        }
+        fclose(file);
+    }
+    return value;
+}
+static const char *network_address_kind(const struct network_display *network, const char *ip)
+{
+    if (!strcmp(network->fallback, ip)) return "FALLBACK";
+    if (!strcmp(network->mode, "static") && !strcmp(network->address, ip)) return "STATIC";
+    return !strcmp(network->mode, "dhcp") ? "DHCP" : "IP";
+}
+static const char *recovery_display_address(const struct recovery_addrs *addrs)
+{
+    return addrs && addrs->count ? addrs->ip[(unsigned long)time(NULL) / 8 % addrs->count] : "NO IP";
 }
 
 int recovery_status_json(char *out, size_t size)
@@ -424,9 +408,10 @@ int recovery_status_json(char *out, size_t size)
 			return -1;
 		used += (size_t)n;
 	}
+    struct network_display network = network_display_read();
 	n = snprintf(out + used, size - used,
-		     "],\"firmwareMax\":%ld,\"storageType\":\"%s\",\"storageBytes\":%lld}\n",
-		     firmware_max, storage_type, storage_bytes);
+		     "],\"firmwareMax\":%ld,\"storageType\":\"%s\",\"storageBytes\":%lld,\"networkSource\":\"%s\",\"ipv4Mode\":\"%s\"}\n",
+		     firmware_max, storage_type, storage_bytes, network.source, network.mode);
 	if (n < 0 || (size_t)n >= size - used)
 		return -1;
 	return 0;
@@ -442,18 +427,19 @@ int recovery_format_banner(char *out, size_t size)
 		return -1;
 	if (recovery_collect_ipv4(&addrs) < 0)
 		addrs.count = 0;
-	used = (size_t)snprintf(out, size, "OneKVM recovery web\n");
+	struct network_display network = network_display_read();
+	used = (size_t)snprintf(out, size, "OneKVM recovery web (%s, %s)\n", network.source, network.mode);
 	if (used >= size)
 		return -1;
 	if (addrs.count == 0) {
-		int n = snprintf(out + used, size - used, "  waiting for DHCP\n");
+		int n = snprintf(out + used, size - used, "  %s\n", !strcmp(network.mode, "static") ? "static IPv4 is unavailable; use the console" : "waiting for DHCP");
 
 		return n < 0 || (size_t)n >= size - used ? -1 : 0;
 	}
 	for (i = 0; i < addrs.count; i++) {
 		int n = snprintf(out + used, size - used,
-				 "  http://%s/\n  https://%s/\n",
-				 addrs.ip[i], addrs.ip[i]);
+				 "  %s http://%s/\n  https://%s/\n",
+				 network_address_kind(&network, addrs.ip[i]), addrs.ip[i], addrs.ip[i]);
 
 		if (n < 0 || (size_t)n >= size - used)
 			return -1;
@@ -508,12 +494,94 @@ static int oled_open(void)
 	return open(RECOVERY_OLED_PATH, O_WRONLY | O_CLOEXEC);
 }
 
+/* Draw directly into the rotated framebuffer: no intermediate RGB canvas. */
+static void recovery_pro_pixel(uint8_t *pixels, size_t stride, int x, int y,
+                               uint16_t color)
+{
+    size_t offset = (size_t)(319 - x) * stride + (size_t)y * 2;
+    pixels[offset] = (uint8_t)color;
+    pixels[offset + 1] = (uint8_t)(color >> 8);
+}
+
+static void recovery_render_pro(uint8_t *pixels, size_t stride,
+                                const struct recovery_addrs *addrs)
+{
+    size_t pixel = 0;
+    int count = addrs ? addrs->count : 0;
+
+    if (count < 0) count = 0;
+    if (count > RECOVERY_MAX_ADDRS) count = RECOVERY_MAX_ADDRS;
+    for (size_t i = 0; i + 1 < sizeof(recovery_pro_background) / sizeof(uint16_t); i += 2) {
+        for (unsigned n = 0; n < recovery_pro_background[i] && pixel < 320 * 172; n++, pixel++)
+            recovery_pro_pixel(pixels, stride, (int)(pixel % 320), (int)(pixel / 320),
+                               recovery_pro_background[i + 1]);
+    }
+    if (!count) {
+        for (int y = 0; y < 20; y++) for (int x = 0; x < 160; x++)
+            recovery_pro_pixel(pixels, stride, 148 + x, 50 + y,
+                               recovery_pro_waiting[y * 160 + x]);
+        return;
+    }
+    for (int row = 0; row < count; row++) {
+        int top = 28 + (80 - count * RECOVERY_IP_HEIGHT) / 2 + row * RECOVERY_IP_HEIGHT;
+        for (int col = 0; col < 15 && addrs->ip[row][col]; col++) {
+            char ch = addrs->ip[row][col];
+            int index = ch == '.' ? 10 : ch - '0';
+            if (index < 0 || index > 10) continue;
+            for (int y = 0; y < RECOVERY_IP_HEIGHT; y++) for (int x = 0; x < RECOVERY_IP_WIDTH; x++) {
+                unsigned alpha = recovery_ip_glyphs[index][y * RECOVERY_IP_WIDTH + x];
+                unsigned r = (8 * (255 - alpha) + 244 * alpha) / 255;
+                unsigned g = (11 * (255 - alpha) + 244 * alpha) / 255;
+                unsigned b = (17 * (255 - alpha) + 245 * alpha) / 255;
+                uint16_t color = (uint16_t)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
+                recovery_pro_pixel(pixels, stride, 148 + col * RECOVERY_IP_WIDTH + x, top + y, color);
+            }
+        }
+    }
+}
+
+/* Pro Desk is a 172x320 RGB565 framebuffer, mounted in landscape. */
+static int recovery_framebuffer(const struct recovery_addrs *addrs)
+{
+    struct fb_var_screeninfo var;
+    struct fb_fix_screeninfo fix;
+    uint8_t *pixels;
+    size_t size;
+    int fd, result = -1;
+    size_t done = 0;
+    fd = open("/dev/fb0", O_RDWR | O_CLOEXEC);
+    if (fd < 0) return -1;
+    if (ioctl(fd, FBIOGET_VSCREENINFO, &var) < 0 ||
+        ioctl(fd, FBIOGET_FSCREENINFO, &fix) < 0 ||
+        var.xres != 172 || var.yres != 320 || var.bits_per_pixel != 16 ||
+        var.xoffset || var.yoffset || var.red.offset != 11 || var.red.length != 5 ||
+        var.green.offset != 5 || var.green.length != 6 ||
+        var.blue.offset != 0 || var.blue.length != 5 ||
+        fix.line_length < 344 || fix.line_length > 4096) { close(fd); return -1; }
+    size = (size_t)fix.line_length * var.yres;
+    pixels = calloc(1, size);
+    if (!pixels) { close(fd); return -1; }
+    recovery_render_pro(pixels, fix.line_length, addrs);
+    while (done < size) {
+        ssize_t wrote = pwrite(fd, pixels + done, size - done, (off_t)done);
+        if (wrote < 0 && errno == EINTR) continue;
+        if (wrote <= 0) goto finished;
+        done += (size_t)wrote;
+    }
+    (void)ioctl(fd, FBIOBLANK, FB_BLANK_UNBLANK);
+    result = 0;
+finished:
+    free(pixels);
+    close(fd);
+    return result;
+}
+
 int recovery_oled_canvas(void)
 {
 	int fd = oled_open();
 
 	if (fd < 0)
-		return -1;
+		return recovery_framebuffer(NULL);
 	if (ioctl(fd, _IO('O', OLED_CMD_RECOVERY), 0) < 0) {
 		close(fd);
 		return -1;
@@ -526,8 +594,13 @@ int recovery_oled_off(void)
 {
 	int fd = oled_open();
 
-	if (fd < 0)
-		return -1;
+	if (fd < 0) {
+        char panel[32];
+        /* Older initramfs publishers also send OLED burn-in blanking to the
+         * Pro. Keep its color status visible when only recovery.zip updates. */
+        return read_trimmed("/sys/class/graphics/fb0/name", panel, sizeof(panel)) == 0 &&
+               !strcmp(panel, "fb_jd9853") ? 0 : -1;
+    }
 	if (ioctl(fd, _IO('O', OLED_CMD_OFF), 0) < 0) {
 		close(fd);
 		return -1;
@@ -547,12 +620,11 @@ int recovery_oled_show_addrs(const struct recovery_addrs *addrs)
 	ssize_t wrote;
 
 	if (recovery_oled_geometry(&width, &pages) < 0)
-		return -1;
+		return recovery_framebuffer(addrs);
 	bytes = width * pages;
 	if (bytes <= 0 || bytes > (int)sizeof(frame))
 		return -1;
-	if (addrs && addrs->count > 0)
-		bottom = addrs->ip[0];
+    bottom = recovery_display_address(addrs);
 	recovery_render_status(frame, width, pages, "RECOVERY", bottom);
 	fd = oled_open();
 	if (fd < 0)

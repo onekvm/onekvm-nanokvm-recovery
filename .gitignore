@@ -3,3 +3,6 @@ onekvm-recovery-boot-held
 onekvm-recovery-web
 onekvm-recovery-oled
 onekvm-recovery-sha256
+command-wait-test
+
+onekvm-recovery-network-config

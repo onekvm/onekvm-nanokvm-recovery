@@ -1,0 +1,63 @@
+#!/bin/sh
+set -eu
+helper=/usr/sbin/onekvm-recovery-network-config
+state=/run/onekvm-recovery-network.json
+lock=/run/onekvm-recovery-network.lock
+generation=/run/onekvm-recovery-dhcp.generation
+current_generation() {
+    [ ! -r "$generation" ] || [ "$(cat "$generation")" = "${ONEKVM_RECOVERY_DHCP_ID:-}" ]
+}
+current_generation || exit 0
+attempts=0
+until mkdir "$lock" 2>/dev/null; do
+    current_generation || exit 0
+    [ "$attempts" -lt 50 ] || exit 1
+    sleep 0.1
+    attempts=$((attempts + 1))
+done
+trap 'rmdir "$lock" 2>/dev/null || true' EXIT HUP INT TERM
+current_generation || exit 0
+[ -r "$state" ] || exit 1
+name=$("$helper" get "$state" interface)
+[ "${interface:-}" = "$name" ] || exit 0
+[ "$("$helper" get "$state" mode)" = dhcp ] || exit 0
+lease=/run/onekvm-recovery-lease
+remove_lease() {
+    if [ -s "$lease" ]; then
+        read -r previous <"$lease"
+        fallback=$("$helper" get "$state" fallback_address)
+        if [ "$previous" != "$fallback" ]; then ip -4 addr del "$previous" dev "$name" 2>/dev/null || true; fi
+        rm -f "$lease"
+    fi
+    ip -4 route del default dev "$name" metric 100 2>/dev/null || true
+    if [ "$("$helper" get "$state" fallback_enabled)" = true ]; then
+        fallback=$("$helper" get "$state" fallback_address)
+        ip -4 addr replace "$fallback" dev "$name"
+    fi
+}
+case "${1:-}" in
+    deconfig)
+        remove_lease
+        if [ "$("$helper" get "$state" use_custom_dns)" = false ]; then : >/etc/resolv.conf; fi
+        ;;
+    bound|renew)
+        # Lease values come from BusyBox. Build the contiguous prefix explicitly.
+        prefix=$(awk -v mask="${subnet:-255.255.255.0}" 'BEGIN { n=split(mask,a,"."); if(n!=4)exit 1; p=0;zero=0; for(i=1;i<=4;i++){if(a[i]!~/^[0-9]+$/||a[i]>255)exit 1;for(bit=128;bit>=1;bit/=2){if(int(a[i]/bit)%2){if(zero)exit 1;p++}else zero=1}} if(p<1)exit 1;print p }') || exit 1
+        case "${ip:-}" in ''|*[!0-9.]*) exit 1 ;; esac
+        remove_lease
+        ip -4 addr replace "$ip/$prefix" dev "$name"
+        printf '%s\n' "$ip/$prefix" >"$lease"
+        for gateway in ${router:-}; do
+            case "$gateway" in ''|*[!0-9.]*) continue ;; esac
+            ip -4 route replace default via "$gateway" dev "$name" metric 100
+            break
+        done
+        if [ "$("$helper" get "$state" use_custom_dns)" = false ]; then
+            : >/etc/resolv.conf
+            for server in ${dns:-}; do
+                case "$server" in ''|*[!0-9a-fA-F:.]*) continue ;; esac
+                printf 'nameserver %s\n' "$server" >>/etc/resolv.conf
+            done
+        fi
+        ;;
+esac

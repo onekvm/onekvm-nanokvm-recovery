@@ -15,6 +15,7 @@
 
 #include "recovery-display.h"
 #include "recovery-sha256.h"
+#include "recovery-network.h"
 
 #ifdef HAVE_OPENSSL
 #include <openssl/err.h>
@@ -28,7 +29,7 @@
 #define DEFAULT_WWW "/usr/share/onekvm-recovery"
 #define DEFAULT_CERT "/etc/onekvm-recovery/cert.pem"
 #define DEFAULT_KEY "/etc/onekvm-recovery/key.pem"
-#define DEFAULT_CONFIG "/run/onekvm-recovery-data/upper/etc/onekvm/config.json"
+#define DEFAULT_CONFIG "/run/onekvm-recovery-config"
 #define DEFAULT_FIRMWARE "/run/onekvm-firmware/recovery-update.fwup"
 #define INSTALL_FWUP "/usr/sbin/onekvm-recovery-install-fwup"
 #define PREPARE_DATA "/usr/sbin/onekvm-recovery-prepare-data"
@@ -410,17 +411,24 @@ static void write_progress_error(const char *message)
 
 static int spawn_command(char *const argv[])
 {
-	pid_t child = fork();
+	pid_t child;
 	int status;
 
+	/* The listener auto-reaps request workers. A worker must retain its own
+	 * command's exit status instead of inheriting that SIGCHLD disposition. */
+	if (signal(SIGCHLD, SIG_DFL) == SIG_ERR)
+		return -1;
+	child = fork();
 	if (child == 0) {
 		execv(argv[0], argv);
 		_exit(127);
 	}
 	if (child < 0)
 		return -1;
-	if (waitpid(child, &status, 0) < 0)
-		return -1;
+	while (waitpid(child, &status, 0) < 0) {
+		if (errno != EINTR)
+			return -1;
+	}
 	return WIFEXITED(status) && WEXITSTATUS(status) == 0 ? 0 : -1;
 }
 
@@ -480,6 +488,14 @@ static void handle_get(struct conn *conn, const char *request_path)
 	const char *rel = request_path;
 	FILE *file;
 	long size;
+	if (!strcmp(request_path, "/network")) {
+		char json[4096];
+		if (recovery_network_status(json, sizeof(json)) < 0)
+			send_text(conn, 500, "Internal Server Error", "cannot read Recovery network\n");
+		else
+			send_response(conn, 200, "OK", "application/json; charset=utf-8", json, strlen(json));
+		return;
+	}
 
 	if (!strcmp(request_path, "/status")) {
 		char json[512];
@@ -688,7 +704,44 @@ static void handle_request(struct conn *conn)
 		send_text(conn, 405, "Method Not Allowed", "method not allowed\n");
 		return;
 	}
+	if (!strcmp(path, "/network")) {
+		char body[4097];
+		long received = 0;
+		pid_t child;
+		if (content_length <= 0 || content_length > 4096) {
+			send_text(conn, 400, "Bad Request", "network configuration must be 1-4096 bytes\n");
+			return;
+		}
+		while (received < content_length) {
+			ssize_t got = conn_read(conn, body + received, (size_t)(content_length - received));
+			if (got <= 0) { send_text(conn, 400, "Bad Request", "truncated network configuration\n"); return; }
+			received += got;
+		}
+		if (mkdir(RECOVERY_NETWORK_LOCK, 0700) < 0) {
+			send_text(conn, 409, "Conflict", "a network change is already in progress\n"); return;
+		}
+		if (recovery_network_request(body, (size_t)received, RECOVERY_NETWORK_PENDING) < 0) {
+			unlink(RECOVERY_NETWORK_PENDING); rmdir(RECOVERY_NETWORK_LOCK);
+			send_text(conn, 400, "Bad Request", "invalid Recovery IPv4, MAC or DNS configuration\n"); return;
+		}
+		child = fork();
+		if (child < 0) {
+			unlink(RECOVERY_NETWORK_PENDING); rmdir(RECOVERY_NETWORK_LOCK);
+			send_text(conn, 500, "Internal Server Error", "cannot apply network configuration\n"); return;
+		}
+		if (child == 0) {
+			close(conn->fd); sleep(1);
+			execl("/usr/sbin/onekvm-recovery-network", "onekvm-recovery-network", "--session", (char *)NULL);
+			rmdir(RECOVERY_NETWORK_LOCK); _exit(1);
+		}
+		send_text(conn, 202, "Accepted", "applying network configuration for this Recovery session\n");
+		return;
+	}
 	if (strcmp(path, "/reboot") == 0) {
+		if (spawn_command((char *const[]){ "/usr/sbin/onekvm-recovery-clear-marker", "--boot-retry", NULL }) < 0) {
+			send_text(conn, 500, "Internal Server Error", "cannot clear boot retry counter\n");
+			return;
+		}
 		send_text(conn, 200, "OK", "rebooting\n");
 		if (spawn_command((char *const[]){ "/sbin/reboot", "-f", NULL }) < 0)
 			spawn_command((char *const[]){ "/bin/busybox", "reboot", "-f", NULL });
@@ -704,6 +757,10 @@ static void handle_request(struct conn *conn)
 	if (strcmp(path, "/factory-reset") == 0) {
 		if (spawn_command((char *const[]){ ERASE_USERDATA, NULL }) < 0) {
 			send_text(conn, 500, "Internal Server Error", "cannot factory reset\n");
+			return;
+		}
+		if (spawn_command((char *const[]){ "/usr/sbin/onekvm-recovery-clear-marker", "--boot-retry", NULL }) < 0) {
+			send_text(conn, 500, "Internal Server Error", "cannot clear boot retry counter\n");
 			return;
 		}
 		send_text(conn, 200, "OK", "factory reset complete\n");

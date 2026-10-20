@@ -1,25 +1,34 @@
 #!/bin/sh
 set -eu
 
+case "${1:-}" in
+    '') marker=nextboot-mode.txt ;;
+    --boot-retry) marker=boot_retry_time.txt ;;
+    *) echo 'usage: onekvm-recovery-clear-marker [--boot-retry]' >&2; exit 2 ;;
+esac
+
+. /usr/lib/onekvm/storage-layout.sh
+onekvm_storage_select && onekvm_storage_validate || { echo "invalid boot medium" >&2; exit 1; }
+
 # USB MSC exports the whole card. Release it before touching the boot FAT.
 gadget=/sys/kernel/config/usb_gadget/onekvm-recovery
-if [ -e "$gadget/UDC" ]; then
-    printf '\n' >"$gadget/UDC" || true
+if [ -n "$(cat "$gadget/UDC" 2>/dev/null || true)" ]; then
+    printf '\n' >"$gadget/UDC"
     sleep 1
 fi
 
-[ -b /dev/mmcblk0p1 ] || {
+[ -b "$loader" ] || {
     echo "SD boot partition not found" >&2
     exit 1
 }
 
 boot=/run/onekvm-recovery-boot
 mkdir -p "$boot"
-mount -t vfat -o rw /dev/mmcblk0p1 "$boot" || {
+mount -t vfat -o rw "$loader" "$boot" || {
     echo "cannot mount the SD boot partition" >&2
     exit 1
 }
-rm -f "$boot/nextboot-mode.txt"
+rm -f "$boot/$marker"
 sync
 umount "$boot" || {
     echo "cannot unmount the SD boot partition" >&2

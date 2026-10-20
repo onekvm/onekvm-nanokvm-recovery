@@ -34,4 +34,18 @@ assert_mode '' "$work/unknown"
 
 assert_mode '' "$work/missing"
 
+printf 'recovery\n{"version":1,"network":{"mode":"dhcp"}}\nignored\n' >"$work/once"
+assert_mode recovery "$work/once"
+recovery_copy_nextboot_network "$work/once" "$work/network"
+[ "$(cat "$work/network")" = '{"version":1,"network":{"mode":"dhcp"}}' ]
+# Consuming the boot marker consumes the network choice as well.
+rm "$work/once"
+recovery_copy_nextboot_network "$work/once" "$work/network"
+[ ! -e "$work/network" ]
+recovery_copy_nextboot_network "$work/lf" "$work/network"
+[ ! -e "$work/network" ]
+{ printf 'recovery\n'; head -c 8200 /dev/zero; } >"$work/large"
+recovery_copy_nextboot_network "$work/large" "$work/network"
+[ ! -e "$work/network" ]
+
 echo "next boot mode tests passed"

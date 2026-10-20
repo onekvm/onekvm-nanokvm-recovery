@@ -24,7 +24,11 @@ static int key_pressed(int fd)
 	memset(bits, 0, sizeof(bits));
 	if (ioctl(fd, EVIOCGKEY(sizeof(bits)), bits) < 0)
 		return 0;
-	return (bits[code / 8] & (1U << (code % 8))) != 0;
+	if (bits[code / 8] & (1U << (code % 8)))
+        return 1;
+    /* Pro Desk uses the rotary knob's KEY_ENTER instead of Cube's BOOT. */
+    code = KEY_ENTER;
+    return (bits[code / 8] & (1U << (code % 8))) != 0;
 }
 
 static int evdev_boot_held(void)

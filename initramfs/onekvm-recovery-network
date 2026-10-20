@@ -1,0 +1,137 @@
+#!/bin/sh
+# Apply only validated data. The boot medium is never mounted here.
+set -eu
+helper=/usr/sbin/onekvm-recovery-network-config
+state=/run/onekvm-recovery-network.json
+lock=/run/onekvm-recovery-network.lock
+mode=${1:---boot}
+case "$mode" in
+    dhcp|static|fallback)
+        mkdir "$lock" 2>/dev/null || { echo 'A network change is in progress.' >&2; exit 1; }
+        if ! "$helper" prepare "$state" "$@"; then
+            rmdir "$lock" 2>/dev/null || true
+            echo 'usage: onekvm-recovery-network dhcp | static IP/prefix [gateway] | fallback IP/prefix' >&2
+            exit 1
+        fi
+        mode=--session
+        ;;
+    status) "$helper" inspect "$state"; exit ;;
+    --boot|--session) ;;
+    *) echo 'unknown Recovery network command' >&2; exit 2 ;;
+esac
+if [ "$mode" = --session ]; then
+    input=/run/onekvm-recovery-network.pending
+    trap 'rm -f "$input"; rmdir "$lock" 2>/dev/null || true' EXIT HUP INT TERM
+else
+    mkdir "$lock" 2>/dev/null || exit 1
+    trap 'rmdir "$lock" 2>/dev/null || true' EXIT HUP INT TERM
+    input=/run/onekvm-recovery-network.boot
+    reason=''
+    if [ -f /run/onekvm-recovery-network.once ]; then
+        if "$helper" check /run/onekvm-recovery-network.once >/dev/null 2>&1; then
+            input=/run/onekvm-recovery-network.once
+        else
+            reason=invalid_entry
+        fi
+    fi
+    if ! "$helper" check "$input" >/dev/null 2>&1; then
+        input=/run/onekvm-recovery-network.backup
+        reason=backup_snapshot
+    fi
+    if ! "$helper" check "$input" >/dev/null 2>&1; then input=''; fi
+    if [ -n "$input" ]; then
+        name=$("$helper" get "$input" interface)
+        if [ ! -d "/sys/class/net/$name/device" ] || [ -d "/sys/class/net/$name/wireless" ]; then input=''; fi
+    fi
+    if [ -z "$input" ]; then
+        reason=missing_snapshot
+        name=''
+        for device in /sys/class/net/*; do
+            [ -d "$device/device" ] && [ ! -d "$device/wireless" ] || continue
+            name=${device##*/}
+            break
+        done
+        [ -n "$name" ] || { printf '%s\n' 'No supported Ethernet interface.' >/run/onekvm-recovery-network.reason; exit 1; }
+        "$helper" defaults "$name" "$(cat "/sys/class/net/$name/address")"
+        input=$state
+    fi
+    printf '%s\n' "$reason" >/run/onekvm-recovery-network.reason
+fi
+"$helper" check "$input"
+get() { "$helper" get "$input" "$1"; }
+name=$(get interface)
+[ -d "/sys/class/net/$name/device" ] && [ ! -d "/sys/class/net/$name/wireless" ] || exit 1
+mac=$(get mac_address)
+ipv4_mode=$(get mode)
+address=$(get address)
+gateway=$(get gateway)
+fallback=$(get fallback_address)
+fallback_enabled=$(get fallback_enabled)
+custom_dns=$(get use_custom_dns)
+dns=$(get dns)
+client_id=$(get dhcp_client_id)
+
+# A generation and shared lock prevent a late lease callback from restoring
+# addresses or DNS belonging to an earlier session configuration.
+printf '%s\n' "$$" >/run/onekvm-recovery-dhcp.generation
+export ONEKVM_RECOVERY_DHCP_ID="$$"
+
+# Stop the DHCP process that this Recovery session owns, including before an
+# interface change. Its lease script cannot flush the persistent fallback.
+if [ -r /run/onekvm-recovery-udhcpc.pid ]; then
+    read -r pid </run/onekvm-recovery-udhcpc.pid
+    case "$pid" in
+        ''|*[!0-9]*) ;;
+        *)
+            if [ "$(cat "/proc/$pid/comm" 2>/dev/null || true)" = udhcpc ]; then
+                kill "$pid" 2>/dev/null || true
+                attempts=0
+                while kill -0 "$pid" 2>/dev/null && [ "$attempts" -lt 20 ]; do
+                    sleep 0.1
+                    attempts=$((attempts + 1))
+                done
+                if [ "$(cat "/proc/$pid/comm" 2>/dev/null || true)" = udhcpc ]; then
+                    kill -KILL "$pid" 2>/dev/null || true
+                fi
+            fi
+            ;;
+    esac
+    rm -f /run/onekvm-recovery-udhcpc.pid
+fi
+if [ -r "$state" ]; then
+    previous=$("$helper" get "$state" interface 2>/dev/null || true)
+    if [ -n "$previous" ] && [ "$previous" != "$name" ]; then
+        ip -4 addr flush dev "$previous" 2>/dev/null || true
+        ip -4 route flush dev "$previous" 2>/dev/null || true
+    fi
+fi
+ip link set "$name" down
+ip link set "$name" address "$mac"
+ip -4 addr flush dev "$name"
+ip -4 route flush dev "$name" 2>/dev/null || true
+ip link set "$name" up
+if [ "$ipv4_mode" = static ]; then
+    ip -4 addr add "$address" dev "$name"
+    [ -z "$gateway" ] || ip -4 route replace default via "$gateway" dev "$name" metric 100
+fi
+if [ "$fallback_enabled" = true ]; then
+    ip -4 addr replace "$fallback" dev "$name"
+fi
+if [ "$input" != "$state" ]; then
+    cp "$input" "$state.tmp"
+    mv -f "$state.tmp" "$state"
+fi
+source=$("$helper" get "$state" source)
+# Display metadata is derived from validated JSON, never evaluated as shell.
+printf '%s\n' "$ipv4_mode" "$source" "${address:--}" "$([ "$fallback_enabled" = true ] && printf '%s' "$fallback" || printf '%s' -)" >/run/onekvm-recovery-network.display
+: >/etc/resolv.conf
+if [ "$custom_dns" = true ]; then
+    for server in $dns; do printf 'nameserver %s\n' "$server" >>/etc/resolv.conf; done
+fi
+if [ "$ipv4_mode" = dhcp ]; then
+    udhcpc -i "$name" -f -t 12 -T 2 -x "0x3d:$client_id" -s /usr/sbin/onekvm-recovery-dhcp >/run/onekvm-recovery-dhcp.log 2>&1 &
+    printf '%s\n' "$!" >/run/onekvm-recovery-udhcpc.pid
+fi
+if [ "$mode" = --session ]; then
+    printf '%s\n' session >/run/onekvm-recovery-network.reason
+fi

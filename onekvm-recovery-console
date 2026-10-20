@@ -1,11 +1,19 @@
 #!/bin/sh
 
+root_device=$(readlink -f /dev/onekvm-rootfs-a 2>/dev/null || true)
+disk_name=${root_device##*/}
+disk_name=${disk_name%p2}
+media_type=
+case "$(cat /sys/class/block/$disk_name/device/type 2>/dev/null)" in
+    SD) media_type=SD ;;
+    MMC) media_type=eMMC ;;
+esac
 sd_read_sectors=0
 sd_write_sectors=0
-if [ -r /sys/class/block/mmcblk0/stat ]; then
+if [ -r /sys/class/block/$disk_name/stat ]; then
     read -r read_ios read_merges sd_read_sectors read_ms \
         write_ios write_merges sd_write_sectors write_ms rest \
-        </sys/class/block/mmcblk0/stat
+        </sys/class/block/$disk_name/stat
 fi
 
 render_status() {
@@ -25,18 +33,18 @@ render_status() {
     uptime=${uptime%%.*}
     uptime=$((uptime / 60))
 
-    disk='SD unavailable'
-    if [ -r /sys/class/block/mmcblk0/size ]; then
-        read -r sectors </sys/class/block/mmcblk0/size
+    disk='Storage unavailable'
+    if [ -n "$media_type" ] && [ -r /sys/class/block/$disk_name/size ]; then
+        read -r sectors </sys/class/block/$disk_name/size
         size_tenths=$((sectors * 5 / 1048576))
         read -r read_ios read_merges read_sectors read_ms \
             write_ios write_merges write_sectors write_ms rest \
-            </sys/class/block/mmcblk0/stat
+            </sys/class/block/$disk_name/stat
         read_rate=$(((read_sectors - sd_read_sectors) / 2))
         write_rate=$(((write_sectors - sd_write_sectors) / 2))
         sd_read_sectors=$read_sectors
         sd_write_sectors=$write_sectors
-        disk="SD $((size_tenths / 10)).$((size_tenths % 10))G R ${read_rate}K/s W ${write_rate}K/s"
+        disk="$media_type $((size_tenths / 10)).$((size_tenths % 10))G R ${read_rate}K/s W ${write_rate}K/s"
     fi
 
     printf '\r\033[2KRecovery | RAM %s/%sM | load %s | up %sm | %s' \
@@ -53,5 +61,6 @@ while ! /usr/sbin/onekvm-recovery-read-key; do
 done
 stty sane
 printf '\r\n'
+printf '%s\n' 'Recovery network: onekvm-recovery-network status | dhcp | static IP/prefix [gateway] | fallback IP/prefix'
 cd /
 exec sh -i
