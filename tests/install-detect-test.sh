@@ -27,6 +27,39 @@ kind=$("$install" --detect "$work/installer.img")
     exit 1
 }
 
+python3 - "$work/metadata.img" <<'PY'
+import hashlib
+import struct
+import sys
+
+path = sys.argv[1]
+payload = b'payload for trailer verification' * 32
+metadata = bytearray(480)
+metadata[:16] = b'ONEKVM-IMG-META\0'
+struct.pack_into('<HHBBHQHH', metadata, 16, 1, 480, 3, 2, 0,
+                 len(payload), 96, 0)
+metadata[36:68] = hashlib.sha256(payload).digest()
+metadata[68:68 + len('test-build')] = b'test-build'
+machine = b'onekvm-nanokvm-pro'
+struct.pack_into('<HH', metadata, 164, len(machine), 0)
+metadata[168:168 + len(machine)] = machine
+body = payload + metadata
+open(path, 'wb').write(body + hashlib.sha256(body).digest())
+PY
+ONEKVM_RECOVERY_LIBRARY_ONLY=1 \
+ONEKVM_RECOVERY_SHA256="$root/onekvm-recovery-sha256" \
+    . "$install"
+onekvm_validate_image_metadata "$work/metadata.img" pro-emmc
+if onekvm_validate_image_metadata "$work/metadata.img" pro-sd 2>/dev/null; then
+    echo "metadata accepted for wrong storage" >&2
+    exit 1
+fi
+printf X | dd of="$work/metadata.img" bs=1 seek=0 conv=notrunc status=none
+if onekvm_validate_image_metadata "$work/metadata.img" pro-emmc 2>/dev/null; then
+    echo "tampered metadata image accepted" >&2
+    exit 1
+fi
+
 printf 'nope' >"$work/junk"
 if "$install" --detect "$work/junk" >/dev/null 2>&1; then
     echo "junk file was accepted" >&2

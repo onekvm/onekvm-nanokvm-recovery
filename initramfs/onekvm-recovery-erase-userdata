@@ -1,22 +1,24 @@
 #!/bin/sh
 set -eu
+. /usr/lib/onekvm/storage-layout.sh
+onekvm_storage_select && onekvm_storage_validate || { echo "invalid boot medium" >&2; exit 1; }
 
 # Unbind USB MSC before touching userdata. Harmless if the gadget is down.
 gadget=/sys/kernel/config/usb_gadget/onekvm-recovery
-if [ -e "$gadget/UDC" ]; then
-    printf '\n' >"$gadget/UDC" || true
+if [ -n "$(cat "$gadget/UDC" 2>/dev/null || true)" ]; then
+    printf '\n' >"$gadget/UDC"
     sleep 1
 fi
 
-[ -b /dev/mmcblk0p4 ] || {
+[ -b "$userdata" ] || {
     echo "userdata partition not found" >&2
     exit 1
 }
-[ "$(cat /sys/class/block/mmcblk0p4/partition 2>/dev/null)" = 4 ] || {
+[ "$(cat /sys/class/block/${disk_name}p4/partition 2>/dev/null)" = 4 ] || {
     echo "refusing to erase an unexpected userdata device" >&2
     exit 1
 }
-userdata_size=$(cat /sys/class/block/mmcblk0p4/size 2>/dev/null) || {
+userdata_size=$(cat /sys/class/block/${disk_name}p4/size 2>/dev/null) || {
     echo "cannot read userdata partition size" >&2
     exit 1
 }
@@ -32,11 +34,20 @@ if grep -q ' /run/onekvm-recovery-data ' /proc/mounts; then
     }
 fi
 
-mkfs.ext4 -F -L userdata \
-    -U 4f4b564d-0000-4000-8000-000000000004 \
-    -m 0 -J size=16 \
-    -O ^orphan_file,^metadata_csum_seed \
-    -E lazy_itable_init=1,lazy_journal_init=1 \
-    /dev/mmcblk0p4 >/dev/null
+# Factory reset must not leave a previous static IP or MAC in the boot snapshot.
+boot=/run/onekvm-recovery-network-reset
+mkdir -p "$boot"
+mount -t vfat -o rw "$loader" "$boot" || { echo "cannot clear Recovery network" >&2; exit 1; }
+rm -f "$boot/recovery-network.json" "$boot/recovery-network.json.bak" "$boot/recovery-network.json.tmp" "$boot/.recovery-network.lock"
+sync
+umount "$boot" || { echo "cannot unmount boot partition" >&2; exit 1; }
+rmdir "$boot" 2>/dev/null || true
+
+# Same partition and size. Factory reset is the only path that replaces
+# an existing filesystem, and the replacement is f2fs. Boot still mounts
+# ext4 when this script has not run.
+mkfs.f2fs -f -l userdata \
+    -U "$userdata_uuid" \
+    "$userdata" >/dev/null
 sync
 echo "userdata erased"

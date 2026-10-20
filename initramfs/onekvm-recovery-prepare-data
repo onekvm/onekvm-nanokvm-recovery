@@ -1,20 +1,39 @@
 #!/bin/sh
 set -eu
+. /usr/lib/onekvm/storage-layout.sh
+onekvm_storage_select && onekvm_storage_validate || { echo "invalid boot medium" >&2; exit 1; }
 
 # USB MSC exports the whole card. Release it before mounting userdata.
 gadget=/sys/kernel/config/usb_gadget/onekvm-recovery
-if [ -e "$gadget/UDC" ]; then
-    printf '\n' >"$gadget/UDC" || true
+if [ -n "$(cat "$gadget/UDC" 2>/dev/null || true)" ]; then
+    printf '\n' >"$gadget/UDC"
     sleep 1
 fi
 
 if ! grep -q ' /run/onekvm-recovery-data ' /proc/mounts; then
-    [ -b /dev/mmcblk0p4 ] || {
+    [ -b "$userdata" ] || {
         echo "userdata partition not found" >&2
         exit 1
     }
     mkdir -p /run/onekvm-recovery-data
-    mount -t ext4 -o rw /dev/mmcblk0p4 /run/onekvm-recovery-data
+    userdata_type=$(blkid -p -s TYPE -o value "$userdata" 2>/dev/null || true)
+    case "$userdata_type" in
+        ext4|f2fs) ;;
+        *)
+            echo "userdata filesystem type '${userdata_type:-unknown}' is not ext4 or f2fs" >&2
+            exit 1
+            ;;
+    esac
+    mount -t "$userdata_type" -o rw "$userdata" /run/onekvm-recovery-data
 fi
-mkdir -p /run/onekvm-recovery-data/storage \
-    /run/onekvm-recovery-data/upper/etc/onekvm
+data=/run/onekvm-recovery-data
+if [ -f "$data/storage/onekvm/config/config.json" ]; then
+    config=$data/storage/onekvm/config/config.json
+else
+    # Legacy Cube layouts store config in upper. Do not follow an absolute
+    # runtime /mnt/storage symlink from inside the initramfs.
+    [ ! -L "$data/upper/etc/onekvm" ] || { echo "missing persistent config" >&2; exit 1; }
+    mkdir -p "$data/upper/etc/onekvm"
+    config=$data/upper/etc/onekvm/config.json
+fi
+ln -sfn "$config" /run/onekvm-recovery-config
