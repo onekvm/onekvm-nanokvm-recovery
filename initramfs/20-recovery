@@ -18,6 +18,26 @@ recovery_wait_for() {
     [ -e "$path" ]
 }
 
+recovery_wait_for_block_device() {
+    path=$1
+    count=0
+    # A removable SD node can appear before the card capacity is ready.  Do
+    # not expose such a node through USB mass-storage: hosts enumerate it as
+    # a zero-sized disk ("No medium") and keep the stale LUN until reconnect.
+    while [ "$count" -lt 100 ]; do
+        if [ -b "$path" ]; then
+            size=$(blockdev --getsize64 "$path" 2>/dev/null || true)
+            case "$size" in
+                ''|*[!0-9]*|0) ;;
+                *) return 0 ;;
+            esac
+        fi
+        sleep 0.1
+        count=$((count + 1))
+    done
+    return 1
+}
+
 recovery_wait_for_udc() {
     count=0
     while [ "$count" -lt 50 ]; do
@@ -240,7 +260,7 @@ recovery_start_oled() {
 }
 
 recovery_start_gadget() {
-    recovery_wait_for "$disk" || recovery_die "SD card not found"
+    recovery_wait_for_block_device "$disk" || recovery_die "SD card capacity not ready"
 
     mkdir -p /sys/kernel/config
     if ! grep -q ' /sys/kernel/config configfs ' /proc/mounts; then

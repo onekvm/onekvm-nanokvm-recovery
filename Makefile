@@ -47,6 +47,7 @@ test: onekvm-recovery-network-config onekvm-recovery-web onekvm-recovery-oled on
 	sh tests/reset-user-test.sh
 	sh tests/install-detect-test.sh
 	sh tests/bounded-copy-test.sh
+	sh tests/block-device-wait-test.sh
 	sh tests/nextboot-mode-test.sh
 	sh tests/boot-retry-test.sh
 	./onekvm-recovery-oled --self-test
