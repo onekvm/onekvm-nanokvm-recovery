@@ -241,12 +241,23 @@ install_image() {
         root_sectors=$(onekvm_read_le32 "$bundle" 474)
     fi
     case "$storage_media" in
-        nanokvm) expected_geometry=1:262144:264192 ;;
-        pro-sd) expected_geometry=2048:262144:264192 ;;
-        pro-emmc) expected_geometry=306688:262144:568832 ;;
+        nanokvm)
+            expected_boot_lba=1
+            expected_root_lba=$(((expected_boot_lba + boot_sectors + 2047) / 2048 * 2048))
+            [ "$boot_sectors" -ge 32768 ] && [ "$boot_sectors" -le 262144 ]
+            [ "$((boot_sectors % 2048))" -eq 0 ]
+            [ "$boot_lba:$root_lba" = "$expected_boot_lba:$expected_root_lba" ]
+            ;;
+        pro-sd)
+            expected_boot_lba=2048
+            expected_root_lba=$(((expected_boot_lba + boot_sectors + 2047) / 2048 * 2048))
+            [ "$boot_sectors" -ge 32768 ] && [ "$boot_sectors" -le 262144 ]
+            [ "$((boot_sectors % 2048))" -eq 0 ]
+            [ "$boot_lba:$root_lba" = "$expected_boot_lba:$expected_root_lba" ]
+            ;;
+        pro-emmc) [ "$boot_lba:$boot_sectors:$root_lba" = 306688:262144:568832 ] ;;
         *) exit 1 ;;
     esac
-    [ "$boot_lba:$boot_sectors:$root_lba" = "$expected_geometry" ]
     root_offset=$((root_lba * 512))
     magic=$(od -An -tx1 -j "$root_offset" -N4 "$bundle" | tr -d ' \n')
     [ "$magic" = 68737173 ]
