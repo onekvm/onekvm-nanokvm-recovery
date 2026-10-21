@@ -152,7 +152,10 @@ sync it, rename it in the same directory, and sync again.
 ## Boot attempts
 
 Before a normal boot, `20-recovery` temporarily mounts the boot FAT read-write,
-appends one `1\n` record to `boot_retry_time.txt`, syncs it, and unmounts it.
+reads `boot-retry-policy.txt`, then appends one `1\n` record to
+`boot_retry_time.txt`, syncs it, and unmounts it. A missing or unknown policy
+is enabled; `disabled`, `false`, and `0` remove the stale retry counter and
+continue the normal boot.
 Attempts 1 through 9 continue to rootfs; attempt 10 enters Recovery immediately.
 Malformed records or a counter read/write failure also select Recovery.
 Explicit Recovery entry does not append a record. Factory reset starts a new

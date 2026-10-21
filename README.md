@@ -27,6 +27,10 @@ Recovery boots do not add attempts. Recovery retains the counter until a
 successful firmware installation, factory reset, or a reboot requested through
 the Recovery web page resets it, allowing another normal boot attempt.
 
+Core writes `/boot/boot-retry-policy.txt`. Missing or unrecognised files keep
+the safety mechanism enabled; `disabled`, `false`, or `0` clears the old
+counter and allows normal boot.
+
 The recovery web server on TCP 80/443 serves the Recovery UI built by
 `onekvm-ui` (`dist-recovery/`). That page exposes firmware flash (a `.fwup`
 update to the inactive A/B slot, or a complete installer `.img` restoring the

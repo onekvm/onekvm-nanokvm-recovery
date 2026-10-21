@@ -147,8 +147,10 @@ boot FAT 删除；如果消费失败，initramfs 会停止，不会带着仍有�
 
 ## 启动尝试
 
-正常启动前，`20-recovery` 临时读写挂载 boot FAT，向 `boot_retry_time.txt` 追加
-一行 `1`，同步后卸载。第 1–9 次继续启动系统，第 10 次直接进入 Recovery。
+正常启动前，`20-recovery` 临时读写挂载 boot FAT，先读取 `boot-retry-policy.txt`；
+文件缺失或无法识别时继续开启保护，内容为 `disabled`、`false` 或 `0` 时清理旧计数器
+并继续正常启动。启用保护时向 `boot_retry_time.txt` 追加一行 `1`，同步后卸载。
+第 1–9 次继续启动系统，第 10 次直接进入 Recovery。
 计数记录损坏、无法读取或写入时也转入 Recovery。主动进入 Recovery 不增加次数；
 恢复出厂设置会开启新一轮计数。Recovery 保留失败记录，成功安装固件、恢复出厂
 或在恢复网页选择重启时清除。重启助手在挂载 boot FAT 前先释放 USB mass storage。

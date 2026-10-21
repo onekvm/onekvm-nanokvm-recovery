@@ -21,6 +21,9 @@ initramfs 在每次正常启动前向 `/boot/boot_retry_time.txt` 追加一行 `
 两分钟后删除该文件。主动进入 Recovery 不累加次数；Recovery 中保留失败计数，
 成功安装固件、恢复出厂设置或通过恢复网页重启时清除，以便重新尝试正常启动。
 
+Core 会写入 `/boot/boot-retry-policy.txt`。文件缺失或内容无法识别时仍默认开启保护；
+内容为 `disabled`、`false` 或 `0` 时清理旧计数器并继续正常启动。
+
 80/443 上的恢复网页使用 `onekvm-ui` 打包的 Recovery UI（`dist-recovery/`）。
 页面提供固件刷写（`.fwup` 更新包写入未启动的 A/B 槽，或完整 `.img` 恢复
 非活动槽及其配套启动载荷）、重置默认 Web 用户、恢复出厂设置和重启。不会改写

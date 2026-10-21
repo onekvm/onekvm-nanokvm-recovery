@@ -24,6 +24,7 @@ umount() {
     mkdir "$1"
 }
 counter=$filesystem/boot_retry_time.txt
+policy=$filesystem/boot-retry-policy.txt
 
 attempt=1
 while [ "$attempt" -lt 10 ]; do
@@ -40,8 +41,21 @@ if recovery_record_boot_attempt "$work/mount"; then
 fi
 [ "$(wc -l <"$counter")" -eq 11 ]
 
+# A disabled policy clears an old counter and allows normal boot. Missing or
+# unrecognised policies remain enabled for fail-safe behavior.
+printf 'disabled\n' >"$policy"
+recovery_record_boot_attempt "$work/mount"
+[ ! -e "$counter" ] && [ ! -e "$work/mount" ]
+printf 'false\r\n' >"$policy"
+printf '1\n' >"$counter"
+recovery_record_boot_attempt "$work/mount"
+[ ! -e "$counter" ] && [ ! -e "$work/mount" ]
+printf 'unexpected\n' >"$policy"
+recovery_record_boot_attempt "$work/mount"
+[ "$(wc -l <"$counter")" -eq 1 ]
+rm "$policy" "$counter"
+
 # A successful boot or explicit Recovery retry starts a new ten-boot window.
-rm "$counter"
 recovery_record_boot_attempt "$work/mount"
 [ "$(cat "$counter")" = 1 ]
 printf '1\r\n' >"$counter"

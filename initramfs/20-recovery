@@ -107,6 +107,31 @@ recovery_record_boot_attempt() {
         return 1
     fi
     retry_file=$retry_mount/boot_retry_time.txt
+    retry_policy=
+    if [ -f "$retry_mount/boot-retry-policy.txt" ]; then
+        retry_policy=$(awk 'NR == 1 { sub(/\r$/, ""); print; exit }' \
+            "$retry_mount/boot-retry-policy.txt" 2>/dev/null || true)
+    fi
+    case "$retry_policy" in
+        disabled|false|0)
+            if ! rm -f "$retry_file"; then
+                info "OneKVM: cannot clear boot retry counter while Recovery retry policy is disabled"
+                umount "$retry_mount" || recovery_die "cannot unmount boot retry partition"
+                rmdir "$retry_mount" 2>/dev/null || true
+                return 1
+            fi
+            sync
+            umount "$retry_mount" || recovery_die "cannot unmount boot retry partition"
+            rmdir "$retry_mount" 2>/dev/null || true
+            retry_message="OneKVM: boot retry policy disabled"
+            if [ -c /dev/kmsg ] && { printf '<6>%s\n' "$retry_message" >/dev/kmsg; } 2>/dev/null; then
+                :
+            else
+                msg "$retry_message"
+            fi
+            return 0
+            ;;
+    esac
     retry_count=$retry_limit
     if printf '1\n' >>"$retry_file"; then
         sync
