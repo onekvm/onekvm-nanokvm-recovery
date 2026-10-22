@@ -40,6 +40,9 @@ test-pro-display:
 	"$$work/test" "$(OUTPUT_PREFIX)"
 
 test: onekvm-recovery-network-config onekvm-recovery-web onekvm-recovery-oled onekvm-recovery-sha256 onekvm-recovery-boot-held command-wait-test test-pro-display
+	@work=$$(mktemp -d); trap 'rm -rf "$$work"' EXIT; \
+	$(CC) $(CPPFLAGS) $(CFLAGS) -DRECOVERY_SHA256_VECTOR_TEST -shared -fPIC $(LDFLAGS) $(SHA_SRC) -o "$$work/sha256.so" && \
+	python3 tests/sha256-test.py "$$work/sha256.so"
 	./command-wait-test
 	@work=$$(mktemp -d); trap 'rm -rf "$$work"' EXIT; \
 	$(CC) $(CPPFLAGS) $(CFLAGS) -shared -fPIC $(LDFLAGS) $(NETWORK_SRC) $(SHA_SRC) -o "$$work/network.so" -ljson-c && \

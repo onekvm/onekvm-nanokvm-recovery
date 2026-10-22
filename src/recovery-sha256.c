@@ -3,6 +3,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -22,22 +23,10 @@ static uint32_t rotr(uint32_t value, uint32_t bits)
 	return (value >> bits) | (value << (32 - bits));
 }
 
-static void process_block(struct recovery_sha256 *ctx, const uint8_t block[64])
+static void compress_words(struct recovery_sha256 *ctx, const uint32_t *w, size_t stride)
 {
-	uint32_t w[64];
 	uint32_t a, b, c, d, e, f, g, h;
 	int i;
-
-	for (i = 0; i < 16; i++) {
-		w[i] = ((uint32_t)block[i * 4] << 24) | ((uint32_t)block[i * 4 + 1] << 16) |
-		       ((uint32_t)block[i * 4 + 2] << 8) | (uint32_t)block[i * 4 + 3];
-	}
-	for (i = 16; i < 64; i++) {
-		uint32_t s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >> 3);
-		uint32_t s1 = rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >> 10);
-
-		w[i] = w[i - 16] + s0 + w[i - 7] + s1;
-	}
 	a = ctx->state[0];
 	b = ctx->state[1];
 	c = ctx->state[2];
@@ -49,7 +38,7 @@ static void process_block(struct recovery_sha256 *ctx, const uint8_t block[64])
 	for (i = 0; i < 64; i++) {
 		uint32_t S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
 		uint32_t ch = (e & f) ^ ((~e) & g);
-		uint32_t temp1 = h + S1 + ch + k[i] + w[i];
+		uint32_t temp1 = h + S1 + ch + k[i] + w[i * stride];
 		uint32_t S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
 		uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
 		uint32_t temp2 = S0 + maj;
@@ -73,6 +62,116 @@ static void process_block(struct recovery_sha256 *ctx, const uint8_t block[64])
 	ctx->state[7] += h;
 }
 
+static void process_block(struct recovery_sha256 *ctx, const uint8_t block[64])
+{
+	uint32_t w[64];
+	int i;
+
+	for (i = 0; i < 16; i++) {
+		w[i] = ((uint32_t)block[i * 4] << 24) | ((uint32_t)block[i * 4 + 1] << 16) |
+		       ((uint32_t)block[i * 4 + 2] << 8) | (uint32_t)block[i * 4 + 3];
+	}
+	for (i = 16; i < 64; i++) {
+		uint32_t s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >> 3);
+		uint32_t s1 = rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >> 10);
+
+		w[i] = w[i - 16] + s0 + w[i - 7] + s1;
+	}
+	compress_words(ctx, w, 1);
+}
+
+/* Only C906's original XTheadVector ISA uses this path, without RVV 1.0 opcodes.
+ * SHA-256 chaining stays sequential; four independent message schedules run
+ * in parallel. The host-test define exercises the same arithmetic with SIMD.
+ */
+#if defined(__riscv_xtheadvector) || defined(RECOVERY_SHA256_VECTOR_TEST)
+#define HAVE_SHA256_SCHEDULE_VECTOR 1
+typedef uint32_t schedule_vec __attribute__((vector_size(16)));
+
+#if !defined(__riscv_xtheadvector)
+static schedule_vec vec_rotr(schedule_vec value, unsigned int bits)
+{
+	return (value >> bits) | (value << (32 - bits));
+}
+#endif
+
+static void process_four_blocks(struct recovery_sha256 *ctx, const uint8_t *blocks)
+{
+	union {
+		schedule_vec vector[64];
+		uint32_t words[64 * 4];
+	} w;
+	int i, lane;
+
+	for (i = 0; i < 16; i++) {
+		for (lane = 0; lane < 4; lane++) {
+			const uint8_t *p = blocks + lane * 64 + i * 4;
+			w.words[i * 4 + lane] = ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+				((uint32_t)p[2] << 8) | p[3];
+		}
+	}
+#if defined(__riscv_xtheadvector)
+	/* GCC lowers fixed-width GNU vectors to scalars on this target. Use the
+	 * original T-Head mnemonics explicitly for the four-lane schedule. */
+	{
+		uint32_t *cursor = &w.words[16 * 4];
+		unsigned long count = 48;
+		__asm__ volatile (
+			"li t0, 4\n\t"
+			"th.vsetvli zero, t0, e32, m1\n\t"
+			"1:\n\t"
+			"addi t0, %[cursor], -240\n\t"
+			"th.vle.v v0, (t0)\n\t"
+			"addi t0, %[cursor], -32\n\t"
+			"th.vle.v v1, (t0)\n\t"
+			"th.vsrl.vi v2, v0, 7\n\t"
+			"th.vsll.vi v3, v0, 25\n\t"
+			"th.vor.vv v2, v2, v3\n\t"
+			"th.vsrl.vi v3, v0, 18\n\t"
+			"th.vsll.vi v4, v0, 14\n\t"
+			"th.vor.vv v3, v3, v4\n\t"
+			"th.vxor.vv v2, v2, v3\n\t"
+			"th.vsrl.vi v0, v0, 3\n\t"
+			"th.vxor.vv v2, v2, v0\n\t"
+			"th.vsrl.vi v3, v1, 17\n\t"
+			"th.vsll.vi v4, v1, 15\n\t"
+			"th.vor.vv v3, v3, v4\n\t"
+			"th.vsrl.vi v4, v1, 19\n\t"
+			"th.vsll.vi v5, v1, 13\n\t"
+			"th.vor.vv v4, v4, v5\n\t"
+			"th.vxor.vv v3, v3, v4\n\t"
+			"th.vsrl.vi v1, v1, 10\n\t"
+			"th.vxor.vv v3, v3, v1\n\t"
+			"addi t0, %[cursor], -256\n\t"
+			"th.vle.v v0, (t0)\n\t"
+			"addi t0, %[cursor], -112\n\t"
+			"th.vle.v v1, (t0)\n\t"
+			"th.vadd.vv v0, v0, v1\n\t"
+			"th.vadd.vv v0, v0, v2\n\t"
+			"th.vadd.vv v0, v0, v3\n\t"
+			"th.vse.v v0, (%[cursor])\n\t"
+			"addi %[cursor], %[cursor], 16\n\t"
+			"addi %[count], %[count], -1\n\t"
+			"bnez %[count], 1b\n\t"
+			: [cursor] "+r" (cursor), [count] "+r" (count)
+			:
+			: "t0", "v0", "v1", "v2", "v3", "v4", "v5", "memory"
+		);
+	}
+#else
+	for (i = 16; i < 64; i++) {
+		schedule_vec a = w.vector[i - 15], b = w.vector[i - 2];
+		schedule_vec s0 = vec_rotr(a, 7) ^ vec_rotr(a, 18) ^ (a >> 3);
+		schedule_vec s1 = vec_rotr(b, 17) ^ vec_rotr(b, 19) ^ (b >> 10);
+
+		w.vector[i] = w.vector[i - 16] + s0 + w.vector[i - 7] + s1;
+	}
+#endif
+	for (lane = 0; lane < 4; lane++)
+		compress_words(ctx, &w.words[lane], 4);
+}
+#endif
+
 void recovery_sha256_init(struct recovery_sha256 *ctx)
 {
 	memset(ctx, 0, sizeof(*ctx));
@@ -91,6 +190,33 @@ void recovery_sha256_update(struct recovery_sha256 *ctx, const void *data, size_
 	const uint8_t *bytes = data;
 
 	ctx->bit_len += (uint64_t)length * 8;
+	if (ctx->buffer_len) {
+		size_t room = 64 - ctx->buffer_len;
+		size_t chunk = length < room ? length : room;
+
+		memcpy(ctx->buffer + ctx->buffer_len, bytes, chunk);
+		ctx->buffer_len += chunk;
+		bytes += chunk;
+		length -= chunk;
+		if (ctx->buffer_len == 64) {
+			process_block(ctx, ctx->buffer);
+			ctx->buffer_len = 0;
+		}
+	}
+#ifdef HAVE_SHA256_SCHEDULE_VECTOR
+	if (!getenv("ONEKVM_SHA256_SCALAR")) {
+		while (length >= 256) {
+			process_four_blocks(ctx, bytes);
+			bytes += 256;
+			length -= 256;
+		}
+	}
+#endif
+	while (length >= 64) {
+		process_block(ctx, bytes);
+		bytes += 64;
+		length -= 64;
+	}
 	while (length) {
 		size_t room = 64 - ctx->buffer_len;
 		size_t chunk = length < room ? length : room;
@@ -195,7 +321,9 @@ int recovery_sha256_self_test(void)
 {
 	struct recovery_sha256 ctx;
 	uint8_t digest[32];
+	uint8_t blocks[1024];
 	char hex[65];
+	size_t i;
 
 	recovery_sha256_init(&ctx);
 	recovery_sha256_final(&ctx, digest);
@@ -208,6 +336,22 @@ int recovery_sha256_self_test(void)
 	recovery_sha256_hex(digest, hex);
 	if (strcmp(hex, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad") != 0)
 		return 1;
+	/* Exercise the four-block schedule too, including a buffered prefix. */
+	for (i = 0; i < sizeof(blocks); i++)
+		blocks[i] = (uint8_t)i;
+	for (i = 0; i < 2; i++) {
+		recovery_sha256_init(&ctx);
+		if (i) {
+			recovery_sha256_update(&ctx, blocks, 13);
+			recovery_sha256_update(&ctx, blocks + 13, sizeof(blocks) - 13);
+		} else {
+			recovery_sha256_update(&ctx, blocks, sizeof(blocks));
+		}
+		recovery_sha256_final(&ctx, digest);
+		recovery_sha256_hex(digest, hex);
+		if (strcmp(hex, "785b0751fc2c53dc14a4ce3d800e69ef9ce1009eb327ccf458afe09c242c26c9") != 0)
+			return 1;
+	}
 	return 0;
 }
 

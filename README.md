@@ -65,6 +65,15 @@ See the [initramfs flow guide](docs/initramfs-flow.md) for module ordering,
 boot branches, partition-mount boundaries, and the supported build entry
 points.
 
+Recovery uses SHA-256 for image and readback digests. C906 builds use its
+XTheadVector (0.7.1) instructions to compute four message schedules in parallel;
+the SHA-256 compression chain remains sequential and produces standard digests.
+Other targets use the scalar implementation. Set `ONEKVM_SHA256_SCALAR=1` to
+force the scalar path for comparison. `--self-test` covers both short messages
+and multi-block input; `make test` also compares fragmented SIMD/scalar updates
+against Python's hashlib. This optimization applies to Recovery's hash helper
+and web server, independently of GnuPG, OpenSSL, Rust and Go implementations.
+
 The offline RAUC verifier, gzip squashfs extractor, full `od`/`dd` commands and
 their libraries share an XZ tools payload inside `recovery.zip`, unpacked into
 RAM on entry. Signed bundles use gzip for the outer squashfs; root filesystem

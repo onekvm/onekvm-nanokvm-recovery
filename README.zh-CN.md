@@ -53,6 +53,13 @@ OneKVM 生成的 `.img` 尾部带 512 字节 metadata/hash trailer。Recovery �
 initramfs 的模块顺序、启动分支、分区挂载边界和构建入口见
 [initramfs 流程引导](docs/initramfs-flow.zh-CN.md)。
 
+Recovery 的镜像与回读摘要统一使用 SHA-256。C906 构建使用 XTheadVector（0.7.1）
+指令并行计算四个消息调度，压缩链仍顺序执行，输出标准 SHA-256 摘要；其他目标
+使用标量实现。设置 `ONEKVM_SHA256_SCALAR=1` 可强制标量路径做对照。
+`--self-test` 覆盖短消息和多块输入，`make test` 还会将 SIMD／标量的分片更新
+与 Python hashlib 比较。这项优化作用于 Recovery 的摘要工具和网页服务，
+与 GnuPG、OpenSSL、Rust、Go 各自的实现独立。
+
 ## 编译
 
 ```sh
