@@ -147,6 +147,24 @@ copy_boot_file() {
     mv -f "$boot/.$2.new" "$boot/$2"
     sync
 }
+select_nanokvm_image_boot() {
+    for name in boot.sd build-id-a build-id-b recovery.zip; do
+        [ -s "$img_fat/$name" ] || return 1
+    done
+    fit=$img_fat/boot.sd
+    if [ -e "$img_fat/boot-b.itb" ]; then
+        [ -s "$img_fat/boot-b.itb" ] || return 1
+        [ "$target" != B ] || fit=$img_fat/boot-b.itb
+    else
+        # Only an explicitly compact carrier may omit B. Do not hide damage
+        # to a legacy two-FIT image by silently substituting the other slot.
+        [ "$(cat "$img_fat/bootclone" 2>/dev/null)" = A ] &&
+            cmp -s "$img_fat/build-id-a" "$img_fat/build-id-b" || return 1
+    fi
+    build=$img_fat/build-id-$lower
+    recovery=$img_fat/recovery.zip
+}
+
 # Only the target slot's payload is replaced. Shared Recovery is updated last.
 install_boot() {
     mount -t vfat -o rw "$loader" "$boot"
@@ -157,9 +175,7 @@ install_boot() {
             build=$work/onekvm-nanokvm-build-id
             recovery=$work/onekvm-recovery.zip
         else
-            fit=$img_fat/boot.sd; [ "$target" = A ] || fit=$img_fat/boot-b.itb
-            build=$img_fat/build-id-$lower
-            recovery=$img_fat/recovery.zip
+            select_nanokvm_image_boot
         fi
         bootfile=boot.sd; [ "$target" = A ] || bootfile=boot-b.itb
         copy_boot_file "$fit" "$bootfile"
@@ -268,7 +284,7 @@ install_image() {
     mount -t vfat -o "loop,ro,offset=$((boot_lba * 512)),sizelimit=$((boot_sectors * 512))" "$bundle" "$img_fat"
     img_mounted=1
     if [ "$storage_media" = nanokvm ]; then
-        [ -s "$img_fat/boot.sd" ] && [ -s "$img_fat/boot-b.itb" ] && [ -s "$img_fat/build-id-a" ] && [ -s "$img_fat/recovery.zip" ]
+        select_nanokvm_image_boot
     elif [ "$storage_media" = pro-emmc ]; then
         [ "$(cat "$img_fat/image-format")" = "$storage_media" ]
         for name in Image-a ax630c-a.dtb initramfs-a.uimg boot-a.scr boot-b.scr build-id-a recovery.zip; do [ -s "$img_fat/$name" ]; done

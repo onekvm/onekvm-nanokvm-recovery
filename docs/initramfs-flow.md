@@ -211,6 +211,15 @@ The idle Recovery environment still mounts these non-SD filesystems:
 | Install full `.img` | Validate the 512-byte metadata/hash trailer against the current medium first; unbind gadget, loop-mount the image boot FAT read-only, bound writes to the inactive rootfs and its paired boot; preserve partition table and bootloader, and temporarily mount the device boot FAT read-write |
 | Reboot | Release USB mass storage, briefly mount boot FAT read-write to clear the boot retry counter, unmount, then reboot |
 
+Compact Cube/PCIe `.img` carriers contain only `boot.sd` and declare
+`bootclone=A` in a separate marker file. Recovery validates that marker and
+matching A/B build IDs before marking any slot bad, then installs the A FIT
+under the inactive slot's filename. Legacy images with distinct A/B FITs keep
+using their paired payloads; a missing B FIT without the marker is rejected.
+The active slot, partition table and bootloader are preserved. Older Recovery
+versions require a normal `.fwup` upgrade before they can import this compact
+`.img` format; writing the complete image to a new card runs its own firstboot.
+
 ## Build and verification
 
 The target initramfs, FIT, `recovery.zip`, SD image, and bundle must be built by
