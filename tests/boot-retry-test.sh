@@ -11,10 +11,15 @@ loader=/dev/test-boot
 msg() { printf '%s\n' "$*"; }
 info() { :; }
 fatal() { echo "$*" >&2; exit 1; }
-sync() { :; }
+sync() { echo sync >>"$work/writes"; }
 mount() {
     [ "${fail_mount:-0}" = 0 ] || return 1
-    [ "$1:$2:$3:$4:$5" = "-t:vfat:-o:rw:$loader" ]
+    if [ "$1" = -o ]; then
+        [ "$2:$3" = "remount,rw:$work/mount" ]
+        echo rw >>"$work/writes"
+        return 0
+    fi
+    [ "$1:$2:$3:$4:$5" = "-t:vfat:-o:ro:$loader" ]
     rmdir "$6"
     ln -s "$filesystem" "$6"
 }
@@ -46,6 +51,9 @@ fi
 printf 'disabled\n' >"$policy"
 recovery_record_boot_attempt "$work/mount"
 [ ! -e "$counter" ] && [ ! -e "$work/mount" ]
+rm -f "$work/writes"
+recovery_record_boot_attempt "$work/mount"
+[ ! -e "$work/writes" ] # no RW mount or sync on an already clean disabled policy
 printf 'false\r\n' >"$policy"
 printf '1\n' >"$counter"
 recovery_record_boot_attempt "$work/mount"

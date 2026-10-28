@@ -147,9 +147,14 @@ boot FAT 删除；如果消费失败，initramfs 会停止，不会带着仍有�
 
 ## 启动尝试
 
-正常启动前，`20-recovery` 临时读写挂载 boot FAT，先读取 `boot-retry-policy.txt`；
+正常启动前，`20-recovery` 临时只读挂载 boot FAT，先读取 `boot-retry-policy.txt`；
 文件缺失或无法识别时继续开启保护，内容为 `disabled`、`false` 或 `0` 时清理旧计数器
 并继续正常启动。启用保护时向 `boot_retry_time.txt` 追加一行 `1`，同步后卸载。
+只有需要修改计数时才重新挂载为读写；策略关闭且没有旧计数时不写入、不同步。
+更早的 firstboot 在首次挂载 FAT 前离线检查，异常时只尝试一次自动修复再复检。
+检查、修复或复检失败会在 `/run/onekvm-boot-fat/status` 记录 `failed`，本次跳过
+计数和自动 Recovery，继续正常启动；主动入口仍有效。无法只读挂载 FAT 时忽略
+nextboot 文件，继续判断其他入口。
 第 1–9 次继续启动系统，第 10 次直接进入 Recovery。
 计数记录损坏、无法读取或写入时也转入 Recovery。主动进入 Recovery 不增加次数；
 恢复出厂设置会开启新一轮计数。Recovery 保留失败记录，成功安装固件、恢复出厂

@@ -24,6 +24,11 @@ initramfs 在每次正常启动前向 `/boot/boot_retry_time.txt` 追加一行 `
 Core 会写入 `/boot/boot-retry-policy.txt`。文件缺失或内容无法识别时仍默认开启保护；
 内容为 `disabled`、`false` 或 `0` 时清理旧计数器并继续正常启动。
 
+firstboot 会在首次挂载前离线检查 boot FAT，异常时尝试一次修复并复检。失败时
+本次跳过启动计数和自动 Recovery，继续正常启动；命令行、按键及可读的主动模式
+文件入口保留。FAT 无法只读挂载时忽略模式文件。重试策略关闭且没有旧计数时只读
+挂载，不重新挂载读写，也不执行同步。
+
 80/443 上的恢复网页使用 `onekvm-ui` 打包的 Recovery UI（`dist-recovery/`）。
 页面提供固件刷写（`.fwup` 更新包写入未启动的 A/B 槽，或完整 `.img` 恢复
 非活动槽及其配套启动载荷）、重置默认 Web 用户、恢复出厂设置和重启。不会改写

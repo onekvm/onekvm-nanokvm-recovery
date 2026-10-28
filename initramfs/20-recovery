@@ -99,8 +99,11 @@ recovery_read_nextboot_mode() {
 
     mode_mount=/run/onekvm-recovery-boot
     mkdir -p "$mode_mount"
-    mount -t vfat -o ro "$loader" "$mode_mount" ||
-        recovery_die "cannot mount the SD boot partition"
+    if ! mount -t vfat -o ro "$loader" "$mode_mount"; then
+        info "OneKVM: cannot read next boot mode; continuing without a boot marker"
+        rmdir "$mode_mount" 2>/dev/null || true
+        return 0
+    fi
     mode=$(recovery_parse_nextboot_mode_file "$mode_mount/nextboot-mode.txt")
     if [ "$mode" = recovery ]; then
         recovery_copy_nextboot_network "$mode_mount/nextboot-mode.txt" /run/onekvm-recovery-network.once
@@ -115,13 +118,20 @@ recovery_consume_nextboot_mode() {
         recovery_die "cannot consume /boot/nextboot-mode.txt"
 }
 
+recovery_boot_fat_failed() {
+    fat_status=
+    [ -r /run/onekvm-boot-fat/status ] || return 1
+    read -r fat_status </run/onekvm-boot-fat/status || return 1
+    [ "$fat_status" = failed ]
+}
+
 # Count only normal boot attempts, before either rootfs or userdata is mounted.
 # Each durable line is one attempt; a torn/malformed record requires Recovery.
 recovery_record_boot_attempt() {
     retry_limit=10
     retry_mount=${1:-/run/onekvm-boot-retry}
     mkdir -p "$retry_mount" || return 1
-    if ! mount -t vfat -o rw "$loader" "$retry_mount"; then
+    if ! mount -t vfat -o ro "$loader" "$retry_mount"; then
         info "OneKVM: cannot mount boot partition to record boot attempt"
         rmdir "$retry_mount" 2>/dev/null || true
         return 1
@@ -131,6 +141,21 @@ recovery_record_boot_attempt() {
     if [ -f "$retry_mount/boot-retry-policy.txt" ]; then
         retry_policy=$(awk 'NR == 1 { sub(/\r$/, ""); print; exit }' \
             "$retry_mount/boot-retry-policy.txt" 2>/dev/null || true)
+    fi
+    case "$retry_policy" in
+        disabled|false|0)
+            # The common disabled-policy path needs no write mount or sync.
+            if [ ! -e "$retry_file" ] && [ ! -L "$retry_file" ]; then
+                umount "$retry_mount" || recovery_die "cannot unmount boot retry partition"
+                rmdir "$retry_mount" 2>/dev/null || true
+                return 0
+            fi ;;
+    esac
+    if ! mount -o remount,rw "$retry_mount"; then
+        info "OneKVM: cannot make boot retry partition writable"
+        umount "$retry_mount" || recovery_die "cannot unmount boot retry partition"
+        rmdir "$retry_mount" 2>/dev/null || true
+        return 1
     fi
     case "$retry_policy" in
         disabled|false|0)
@@ -451,6 +476,9 @@ recovery_run() {
     elif [ "$nextboot_mode" = recovery ]; then
         msg "OneKVM: recovery requested by /boot/nextboot-mode.txt"
         recovery_consume_nextboot_mode
+    elif recovery_boot_fat_failed; then
+        info "OneKVM: boot FAT check failed; skipping boot counter and automatic Recovery"
+        return 0
     elif ! recovery_record_boot_attempt; then
         msg "OneKVM: boot retry limit reached or counter unavailable, entering recovery"
     else

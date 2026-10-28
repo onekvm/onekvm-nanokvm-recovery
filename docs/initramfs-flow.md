@@ -151,11 +151,17 @@ sync it, rename it in the same directory, and sync again.
 
 ## Boot attempts
 
-Before a normal boot, `20-recovery` temporarily mounts the boot FAT read-write,
-reads `boot-retry-policy.txt`, then appends one `1\n` record to
+Before a normal boot, `20-recovery` temporarily mounts the boot FAT read-only,
+reads `boot-retry-policy.txt`, then remounts read-write to append one `1\n` record to
 `boot_retry_time.txt`, syncs it, and unmounts it. A missing or unknown policy
 is enabled; `disabled`, `false`, and `0` remove the stale retry counter and
 continue the normal boot.
+If the policy is disabled and no counter exists, it unmounts without a
+read-write remount or sync. Earlier firstboot checks the unmounted FAT and
+attempts repair once. A failed check, repair or verification records `failed`
+in `/run/onekvm-boot-fat/status`: skip the counter and automatic Recovery for
+this boot. Explicit Recovery requests still apply. If the nextboot FAT cannot
+be mounted read-only, ignore that file and continue evaluating other triggers.
 Attempts 1 through 9 continue to rootfs; attempt 10 enters Recovery immediately.
 Malformed records or a counter read/write failure also select Recovery.
 Explicit Recovery entry does not append a record. Factory reset starts a new

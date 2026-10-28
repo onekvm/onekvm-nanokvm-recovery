@@ -31,6 +31,12 @@ Core writes `/boot/boot-retry-policy.txt`. Missing or unrecognised files keep
 the safety mechanism enabled; `disabled`, `false`, or `0` clears the old
 counter and allows normal boot.
 
+Firstboot checks and, if needed, repairs the unmounted boot FAT before this
+hook. If that check fails, normal boot skips the counter and automatic
+Recovery; deliberate command-line, button and readable boot-marker requests
+remain effective. An unreadable FAT mode file is ignored. A disabled retry
+policy with no old counter requires only a read-only mount and no sync.
+
 The recovery web server on TCP 80/443 serves the Recovery UI built by
 `onekvm-ui` (`dist-recovery/`). That page exposes firmware flash (a `.fwup`
 update to the inactive A/B slot, or a complete installer `.img` restoring the
