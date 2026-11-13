@@ -28,7 +28,7 @@ static void preview(const char *prefix, const uint8_t *pixels, size_t stride, in
 int main(int argc, char **argv)
 {
     struct recovery_addrs addrs = {
-        .ip = { "192.168.233.10", "10.100.99.191", "255.255.255.255", "172.16.0.1" },
+        .ip = { "192.168.233.10", "198.51.100.25", "255.255.255.255", "172.16.0.1" },
     };
     size_t decoded = 0;
     for (size_t i = 0; i < sizeof(recovery_pro_background) / sizeof(uint16_t); i += 2)
