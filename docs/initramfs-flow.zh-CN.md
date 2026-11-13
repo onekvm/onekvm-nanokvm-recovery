@@ -274,7 +274,7 @@ DHCP bound/renew/deconfig 保留备用地址与手动 DNS，共用锁和代际�
 ```sh
 onekvm-recovery-network status
 onekvm-recovery-network dhcp
-onekvm-recovery-network static 10.100.99.107/24 10.100.99.1
+onekvm-recovery-network static <设备 IP>/24 <网关 IP>
 onekvm-recovery-network fallback 192.168.233.10/24
 ```
 

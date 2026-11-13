@@ -297,7 +297,7 @@ These console commands apply only to the current session:
 ```sh
 onekvm-recovery-network status
 onekvm-recovery-network dhcp
-onekvm-recovery-network static 10.100.99.107/24 10.100.99.1
+onekvm-recovery-network static <device-ip>/24 <gateway-ip>
 onekvm-recovery-network fallback 192.168.233.10/24
 ```
 
