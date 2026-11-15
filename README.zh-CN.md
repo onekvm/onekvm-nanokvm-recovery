@@ -41,7 +41,7 @@ OLED 通过 C906L（`/dev/onekvm-oled`）轮流显示各个 IPv4，串口/USB �
 不依赖可能已经损坏的 userdata。文件不能超过这块 tmpfs 的剩余空间。`.fwup` 先由离线 RAUC 校验 CMS 签名，并通过 dm-verity 只读挂载验证载荷与机型，
 不在内存中复制整份解压镜像。读取全部载荷校验后再标记目标槽 bad、限长写入、回读 hash、更新配套 boot，最后激活。
 原始 `.img` 需要可信来源和发布 hash；只恢复非活动槽，不改分区表或启动链。
-Pro 的 JD9853 屏幕显示 Recovery/IP，开机按住旋钮 KEY_ENTER 也可进入。
+Pro 的 JD9853 屏幕显示 Recovery/IP，开机按住旋钮 KEY_ENTER 也可进入。屏幕上的“Reboot”可直接点按，或转动旋钮选中后按下：按钮变为红色“Confirm”后，5 秒内再按一次即重启；上传或安装固件期间不可用。
 所有存储动作跟随本次 root 介质；SD 提供整卡 MSC 与 ACM，Pro eMMC 只提供 ACM。
 Pro SD 仍需临时 U-Boot 入口，Recovery 不修改或保存 U-Boot 环境。
 

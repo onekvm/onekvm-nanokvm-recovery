@@ -503,18 +503,57 @@ static void recovery_pro_pixel(uint8_t *pixels, size_t stride, int x, int y,
     pixels[offset + 1] = (uint8_t)(color >> 8);
 }
 
-static void recovery_render_pro(uint8_t *pixels, size_t stride,
-                                const struct recovery_addrs *addrs)
+/* Decode an RGB565 run-length sprite of width w at (x0, y0). */
+static void recovery_pro_sprite(uint8_t *pixels, size_t stride, const uint16_t *runs,
+                                size_t words, int x0, int y0, int w, int h)
 {
-    size_t pixel = 0;
+    size_t pixel = 0, total = (size_t)w * (size_t)h;
+
+    for (size_t i = 0; i + 1 < words; i += 2) {
+        for (unsigned n = 0; n < runs[i] && pixel < total; n++, pixel++)
+            recovery_pro_pixel(pixels, stride, x0 + (int)(pixel % (size_t)w),
+                               y0 + (int)(pixel / (size_t)w), runs[i + 1]);
+    }
+}
+
+#define RECOVERY_SPRITE(runs) (runs), sizeof(runs) / sizeof(uint16_t)
+
+static void recovery_render_pro(uint8_t *pixels, size_t stride,
+                                const struct recovery_addrs *addrs,
+                                enum recovery_button button, int focused)
+{
     int count = addrs ? addrs->count : 0;
 
     if (count < 0) count = 0;
     if (count > RECOVERY_MAX_ADDRS) count = RECOVERY_MAX_ADDRS;
-    for (size_t i = 0; i + 1 < sizeof(recovery_pro_background) / sizeof(uint16_t); i += 2) {
-        for (unsigned n = 0; n < recovery_pro_background[i] && pixel < 320 * 172; n++, pixel++)
-            recovery_pro_pixel(pixels, stride, (int)(pixel % 320), (int)(pixel / 320),
-                               recovery_pro_background[i + 1]);
+    recovery_pro_sprite(pixels, stride, RECOVERY_SPRITE(recovery_pro_background), 0, 0, 320, 172);
+    switch (button) {
+    case RECOVERY_BUTTON_IDLE:
+        if (focused)
+            recovery_pro_sprite(pixels, stride, RECOVERY_SPRITE(recovery_pro_bar_idle_focus),
+                                RECOVERY_BAR_X, RECOVERY_BAR_Y, RECOVERY_BAR_WIDTH, RECOVERY_BAR_HEIGHT);
+        else
+            recovery_pro_sprite(pixels, stride, RECOVERY_SPRITE(recovery_pro_bar_idle),
+                                RECOVERY_BAR_X, RECOVERY_BAR_Y, RECOVERY_BAR_WIDTH, RECOVERY_BAR_HEIGHT);
+        break;
+    case RECOVERY_BUTTON_CONFIRM:
+        if (focused)
+            recovery_pro_sprite(pixels, stride, RECOVERY_SPRITE(recovery_pro_bar_confirm_focus),
+                                RECOVERY_BAR_X, RECOVERY_BAR_Y, RECOVERY_BAR_WIDTH, RECOVERY_BAR_HEIGHT);
+        else
+            recovery_pro_sprite(pixels, stride, RECOVERY_SPRITE(recovery_pro_bar_confirm),
+                                RECOVERY_BAR_X, RECOVERY_BAR_Y, RECOVERY_BAR_WIDTH, RECOVERY_BAR_HEIGHT);
+        break;
+    case RECOVERY_BUTTON_BUSY:
+        recovery_pro_sprite(pixels, stride, RECOVERY_SPRITE(recovery_pro_bar_busy),
+                            RECOVERY_BAR_X, RECOVERY_BAR_Y, RECOVERY_BAR_WIDTH, RECOVERY_BAR_HEIGHT);
+        break;
+    case RECOVERY_BUTTON_REBOOTING:
+        recovery_pro_sprite(pixels, stride, RECOVERY_SPRITE(recovery_pro_bar_rebooting),
+                            RECOVERY_BAR_X, RECOVERY_BAR_Y, RECOVERY_BAR_WIDTH, RECOVERY_BAR_HEIGHT);
+        break;
+    case RECOVERY_BUTTON_NONE:
+        break;
     }
     if (!count) {
         for (int y = 0; y < 20; y++) for (int x = 0; x < 160; x++)
@@ -541,7 +580,8 @@ static void recovery_render_pro(uint8_t *pixels, size_t stride,
 }
 
 /* Pro Desk is a 172x320 RGB565 framebuffer, mounted in landscape. */
-static int recovery_framebuffer(const struct recovery_addrs *addrs)
+static int recovery_framebuffer(const struct recovery_addrs *addrs, enum recovery_button button,
+                                int focused)
 {
     struct fb_var_screeninfo var;
     struct fb_fix_screeninfo fix;
@@ -561,7 +601,7 @@ static int recovery_framebuffer(const struct recovery_addrs *addrs)
     size = (size_t)fix.line_length * var.yres;
     pixels = calloc(1, size);
     if (!pixels) { close(fd); return -1; }
-    recovery_render_pro(pixels, fix.line_length, addrs);
+    recovery_render_pro(pixels, fix.line_length, addrs, button, focused);
     while (done < size) {
         ssize_t wrote = pwrite(fd, pixels + done, size - done, (off_t)done);
         if (wrote < 0 && errno == EINTR) continue;
@@ -576,12 +616,52 @@ finished:
     return result;
 }
 
+int recovery_panel_draw(const struct recovery_addrs *addrs, enum recovery_button button, int focused)
+{
+    return recovery_framebuffer(addrs, button, focused);
+}
+
+int recovery_panel_hit(int x, int y, int max_x, int max_y)
+{
+    /* Same mapping as the framebuffer: landscape x runs down the portrait
+     * rows from the bottom, landscape y across the portrait columns. */
+    int lx, ly;
+
+    if (max_x <= 0 || max_y <= 0 || x < 0 || y < 0 || x > max_x || y > max_y)
+        return 0;
+    lx = 319 - (int)((long)y * 319 / max_y);
+    ly = (int)((long)x * 171 / max_x);
+    /* A few pixels of slack around the button for finger touches. */
+    return lx >= RECOVERY_BAR_X + RECOVERY_BUTTON_X - 4 && lx <= 319 &&
+           ly >= RECOVERY_BAR_Y - 6 && ly <= 171;
+}
+
+int recovery_progress_busy(const char *json)
+{
+    static const char *const busy[] = { "upload", "extract", "verify", "write-rootfs", "write-boot" };
+    const char *phase = json ? strstr(json, "\"phase\"") : NULL;
+    size_t len;
+
+    if (!phase)
+        return 0;
+    phase += strlen("\"phase\"");
+    while (*phase == ' ' || *phase == ':')
+        phase++;
+    if (*phase++ != '"')
+        return 0;
+    len = strcspn(phase, "\"");
+    for (size_t i = 0; i < sizeof(busy) / sizeof(busy[0]); i++)
+        if (strlen(busy[i]) == len && !strncmp(phase, busy[i], len))
+            return 1;
+    return 0;
+}
+
 int recovery_oled_canvas(void)
 {
 	int fd = oled_open();
 
 	if (fd < 0)
-		return recovery_framebuffer(NULL);
+		return recovery_framebuffer(NULL, RECOVERY_BUTTON_NONE, 0);
 	if (ioctl(fd, _IO('O', OLED_CMD_RECOVERY), 0) < 0) {
 		close(fd);
 		return -1;
@@ -620,7 +700,7 @@ int recovery_oled_show_addrs(const struct recovery_addrs *addrs)
 	ssize_t wrote;
 
 	if (recovery_oled_geometry(&width, &pages) < 0)
-		return recovery_framebuffer(addrs);
+		return recovery_framebuffer(addrs, RECOVERY_BUTTON_NONE, 0);
 	bytes = width * pages;
 	if (bytes <= 0 || bytes > (int)sizeof(frame))
 		return -1;

@@ -374,10 +374,21 @@ recovery_start_network() {
 recovery_publish_network() {
     last=
     panel=
+    panel_pid=
     if [ -r /sys/class/graphics/fb0/name ]; then
         read -r panel </sys/class/graphics/fb0/name || true
     fi
+    if [ "$panel" = fb_jd9853 ]; then
+        # Draws the addresses and a Reboot button for the touchscreen and knob.
+        /usr/sbin/onekvm-recovery-oled panel >/dev/null 2>&1 &
+        panel_pid=$!
+    fi
     while :; do
+        if [ -n "$panel_pid" ] && ! kill -0 "$panel_pid" 2>/dev/null; then
+            # An older recovery.zip has no panel command: redraw from here.
+            panel_pid=
+            last=
+        fi
         cur=$(/usr/sbin/onekvm-recovery-oled print 2>/dev/null || true)
         if [ "$cur" != "$last" ]; then
             [ -z "$cur" ] || {
@@ -386,7 +397,7 @@ recovery_publish_network() {
                 printf '%s' "$cur" >/etc/issue
             }
             last=$cur
-            if [ "$panel" = fb_jd9853 ]; then
+            if [ "$panel" = fb_jd9853 ] && [ -z "$panel_pid" ]; then
                 /usr/sbin/onekvm-recovery-oled show >/dev/null 2>&1 || true
             fi
         fi

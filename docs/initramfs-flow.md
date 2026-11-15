@@ -20,7 +20,7 @@ modules to the standard `initramfs-framework` flow:
 - `/init.d/20-recovery` reads the one-shot mode and either handles factory reset
   or takes over the boot in Recovery.
 - `/init.d/89-partlabel` resolves `PARTLABEL=` parameters.
-- `/init.d/90-rootfs` mounts the selected read-only SquashFS root slot.
+- `/init.d/90-rootfs` mounts the selected read-only root slot (SquashFS or EROFS).
 - `/init.d/91-overlayroot` mounts userdata, creates the overlay, and calls
   `switch_root`.
 
@@ -118,7 +118,7 @@ On an already initialized device, the important path is:
        -> recovery: consume mode, load recovery.zip, remain in initramfs
        -> no mode: append a boot attempt; attempt 3 enters Recovery, otherwise resume boot
   -> 89-partlabel
-  -> 90-rootfs (mount selected A/B SquashFS)
+  -> 90-rootfs (mount selected A/B root, SquashFS or EROFS)
   -> 91-overlayroot (mount userdata and switch_root)
 ```
 
@@ -297,7 +297,7 @@ These console commands apply only to the current session:
 ```sh
 onekvm-recovery-network status
 onekvm-recovery-network dhcp
-onekvm-recovery-network static 10.100.99.107/24 10.100.99.1
+onekvm-recovery-network static <device-ip>/24 <gateway-ip>
 onekvm-recovery-network fallback 192.168.233.10/24
 ```
 

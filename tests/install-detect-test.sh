@@ -66,4 +66,42 @@ if "$install" --detect "$work/junk" >/dev/null 2>&1; then
     exit 1
 fi
 
+# Root images inside offset images: SquashFS or EROFS, each with its used size.
+python3 - "$work" <<'PY'
+import struct, sys
+work = sys.argv[1]
+def write(name, offset, fs, size, bits=12, incompat=0):
+    header = bytearray(2048)
+    if fs == 'squashfs':
+        header[:4] = b'hsqs'
+        struct.pack_into('<Q', header, 40, size)
+    else:
+        struct.pack_into('<I', header, 1024, 0xE0F5E1E2)
+        header[1024 + 12] = bits
+        struct.pack_into('<I', header, 1024 + 36, size >> bits)
+        struct.pack_into('<I', header, 1024 + 80, incompat)
+    with open('%s/%s' % (work, name), 'wb') as f:
+        f.seek(offset)
+        f.write(header)
+write('squash.root', 0, 'squashfs', 110305280)
+write('erofs.root', 4096, 'erofs', 87261184)
+write('wide.root', 0, 'erofs', 87261184, incompat=0x80)
+write('emmc-erofs.img', 291241984, 'erofs', 87261184)
+PY
+[ "$(onekvm_root_image_bytes "$work/squash.root" 0)" = 110305280 ]
+[ "$(onekvm_root_image_bytes "$work/erofs.root" 4096)" = 87261184 ]
+if onekvm_root_image_bytes "$work/wide.root" 0 >/dev/null; then
+    echo "48-bit EROFS root accepted" >&2
+    exit 1
+fi
+if onekvm_root_image_bytes "$work/erofs.root" 0 >/dev/null; then
+    echo "root found at the wrong offset" >&2
+    exit 1
+fi
+kind=$("$install" --detect "$work/emmc-erofs.img")
+[ "$kind" = emmc-image ] || {
+    echo "expected EROFS eMMC image, got $kind" >&2
+    exit 1
+}
+
 echo "install detect tests passed"
