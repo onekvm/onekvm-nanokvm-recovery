@@ -8,18 +8,19 @@ trap 'rm -rf "$work"' EXIT
 printf 'onekvm_storage_links() { :; }\n' >"$work/storage.sh"
 sed -e "s|/usr/lib/onekvm/storage-layout.sh|$work/storage.sh|g" \
     -e "s|/run/onekvm-boot-fat/status|$work/status|g" \
-    -e "s|/run/onekvm-recovery-boot|$work/boot|g" \
     "$root/initramfs/20-recovery" >"$work/recovery.sh"
 . "$work/recovery.sh"
+recovery_boot=$work/boot
 info() { :; }
 msg() { :; }
 fatal() { echo "$*" >&2; exit 1; }
 recovery_wait_for() { :; }
 mount() { return 1; }
 loader=/dev/unused
-[ -z "$(recovery_read_nextboot_mode)" ]
+recovery_read_nextboot_mode
+[ -z "$nextboot_mode" ] && [ "$recovery_boot_is_mounted" = false ]
 [ ! -e "$work/boot" ]
-recovery_read_nextboot_mode() { printf '%s\n' "$requested"; }
+recovery_read_nextboot_mode() { nextboot_mode=$requested; }
 recovery_requested_by_cmdline() { [ "$explicit" = cmdline ]; }
 recovery_boot_button_held() { [ "$explicit" = button ]; }
 recovery_consume_nextboot_mode() { echo consumed >>"$work/trace"; }

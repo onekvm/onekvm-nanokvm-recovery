@@ -53,6 +53,8 @@ test: onekvm-recovery-network-config onekvm-recovery-web onekvm-recovery-oled on
 	sh tests/block-device-wait-test.sh
 	sh tests/nextboot-mode-test.sh
 	sh tests/boot-retry-test.sh
+	sh tests/fat-failure-test.sh
+	sh tests/boot-fat-mount-test.sh
 	./onekvm-recovery-oled --self-test
 	./onekvm-recovery-oled status | grep storageBytes
 	./onekvm-recovery-sha256 --self-test
