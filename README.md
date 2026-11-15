@@ -2,7 +2,7 @@
 
 English | [简体中文](README.zh-CN.md)
 
-OneKVM USB recovery and factory-reset support for NanoKVM Cube/PCIe and Pro (SD/eMMC). It includes the
+OneKVM USB recovery and factory-reset support for NanoKVM Cube/PCIe, Pro (SD/eMMC) and Go. It includes the
 initramfs recovery hook, runtime marker commands, recovery console, input
 helper, systemd integration, and a recovery web UI on TCP 80/443.
 
@@ -64,6 +64,18 @@ or installs. Storage follows the actual root device,
 including when both SD and eMMC are present. SD exports whole-card USB mass
 storage plus ACM; Pro eMMC exposes ACM only. Pro SD still needs its temporary
 U-Boot entry; Recovery does not change or save the bootloader environment.
+The physical console is the last serial `console=` on the kernel command line.
+
+NanoKVM Go runs the same hook from its own initramfs. Hold BOOT (GPIO3_A2) at
+power-on, use Recovery in the system settings, or reach ten unsuccessful boots.
+Recovery exports the whole SD card as writable USB mass storage with an ACM
+console, so a complete `onekvm-nanokvm-go-sd.img` can be written to it
+directly; UART3 has the same console. The Go has no Ethernet, so it has no
+Recovery web page or `recovery.zip`, and its screen shows a Recovery notice.
+An init that sources the hook may replace `recovery_board_enter`, which runs
+once Recovery is chosen, set `ONEKVM_RECOVERY_WEB=0` when the board has no
+Recovery web page, and set `ONEKVM_RECOVERY_COUNT_BOOTS=0` for boots whose
+system never clears the counter, such as the Go's NFS root.
 
 OneKVM `.img` files carry a fixed 512-byte metadata/hash trailer. Recovery checks the
 profile, SD/eMMC type, payload length, payload SHA-256, and full-image SHA-256 before

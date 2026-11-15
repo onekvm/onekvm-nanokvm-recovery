@@ -61,6 +61,8 @@ while ! /usr/sbin/onekvm-recovery-read-key; do
 done
 stty sane
 printf '\r\n'
-printf '%s\n' 'Recovery network: onekvm-recovery-network status | dhcp | static IP/prefix [gateway] | fallback IP/prefix'
+if command -v onekvm-recovery-network >/dev/null 2>&1; then
+    printf '%s\n' 'Recovery network: onekvm-recovery-network status | dhcp | static IP/prefix [gateway] | fallback IP/prefix'
+fi
 cd /
 exec sh -i

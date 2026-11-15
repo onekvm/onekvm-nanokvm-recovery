@@ -8,6 +8,37 @@ recovery_die() {
     fatal "OneKVM recovery: $1"
 }
 
+# Runs once Recovery is chosen, before anything else starts. A board whose own
+# init sources this file may replace it, for example to keep its boot
+# watchdog fed and show Recovery on its screen.
+recovery_board_enter() {
+    :
+}
+
+# A board without a Recovery web page, for example without Ethernet, sets
+# ONEKVM_RECOVERY_WEB=0: Recovery then offers USB storage and the consoles.
+recovery_web_enabled() {
+    [ "${ONEKVM_RECOVERY_WEB:-1}" != 0 ]
+}
+
+# The kernel's last serial console, as the physical Recovery console.
+recovery_console_tty() {
+    console_tty=ttyS0
+    for console_arg in $(cat "${ONEKVM_CMDLINE_FILE:-/proc/cmdline}" 2>/dev/null); do
+        case "$console_arg" in
+            console=tty[A-Za-z]*[0-9]*)
+                console_name=${console_arg#console=}
+                console_name=${console_name%%,*}
+                case "$console_name" in
+                    *[!A-Za-z0-9]*) ;;
+                    *) console_tty=$console_name ;;
+                esac
+                ;;
+        esac
+    done
+    printf '%s\n' "$console_tty"
+}
+
 recovery_wait_for() {
     path=$1
     count=0
@@ -307,6 +338,11 @@ recovery_load_oled() {
 }
 
 recovery_start_oled() {
+    case "$storage_media" in
+        nanokvm|pro-sd|pro-emmc) ;;
+        # Other boards draw their screen in recovery_board_enter.
+        *) return 0 ;;
+    esac
     if recovery_load_oled && /usr/sbin/onekvm-recovery-oled canvas 2>/dev/null; then
         msg "OneKVM: Recovery display ready"
         return
@@ -428,7 +464,7 @@ recovery_publish_network() {
         if [ "$cur" != "$last" ]; then
             [ -z "$cur" ] || {
                 printf '%s' "$cur" >/dev/kmsg
-                printf '%s' "$cur" >/dev/ttyS0 2>/dev/null || true
+                printf '%s' "$cur" >"/dev/$console_tty" 2>/dev/null || true
                 printf '%s' "$cur" >/etc/issue
             }
             last=$cur
@@ -466,12 +502,19 @@ recovery_console() {
     export PS1='onekvm-recovery# '
     cd /
 
-    recovery_prepare_firmware_tmpfs
-    recovery_start_network
-    recovery_publish_network &
-    recovery_start_web &
-    printf '<6>OneKVM recovery: HTTP 80/443 firmware, reset-user, factory-reset, reboot; USB SD + consoles\n' \
-        >/dev/kmsg
+    console_tty=$(recovery_console_tty)
+    if recovery_web_enabled; then
+        recovery_prepare_firmware_tmpfs
+        recovery_start_network
+        recovery_publish_network &
+        recovery_start_web &
+    fi
+    if [ -x /usr/sbin/onekvm-recovery-web ]; then
+        printf '<6>OneKVM recovery: HTTP 80/443 firmware, reset-user, factory-reset, reboot; USB SD + consoles\n' \
+            >/dev/kmsg
+    else
+        printf '<6>OneKVM recovery: USB SD + consoles\n' >/dev/kmsg
+    fi
     if recovery_wait_for /dev/ttyGS0; then
         recovery_physical_console &
         recovery_usb_console
@@ -482,7 +525,7 @@ recovery_console() {
 
 recovery_physical_console() {
     while :; do
-        getty -L -n -i -l /usr/sbin/onekvm-recovery-console 115200 ttyS0 vt100
+        getty -L -n -i -l /usr/sbin/onekvm-recovery-console 115200 "$console_tty" vt100
         sleep 1
     done
 }
@@ -527,6 +570,11 @@ recovery_run() {
         recovery_boot_release
         info "OneKVM: boot FAT check failed; skipping boot counter and automatic Recovery"
         return 0
+    elif [ "${ONEKVM_RECOVERY_COUNT_BOOTS:-1}" = 0 ]; then
+        # The board's init disabled the counter for this boot, e.g. a network
+        # root whose system never clears it.
+        recovery_boot_release
+        return 0
     elif ! recovery_record_boot_attempt; then
         msg "OneKVM: boot retry limit reached or counter unavailable, entering recovery"
     else
@@ -534,7 +582,10 @@ recovery_run() {
         return 0
     fi
 
-    recovery_load_payload || info "OneKVM: continuing without recovery web"
+    recovery_board_enter
+    if recovery_web_enabled; then
+        recovery_load_payload || info "OneKVM: continuing without recovery web"
+    fi
     recovery_boot_release
     recovery_assert_sd_unmounted
     recovery_start_oled
