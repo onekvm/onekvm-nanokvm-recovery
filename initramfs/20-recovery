@@ -15,6 +15,18 @@ recovery_board_enter() {
     :
 }
 
+# Runs with the console banner whenever the Recovery addresses change, so a
+# board that draws its own screen can show them.
+recovery_board_addresses() {
+    :
+}
+
+# Runs with the USB device controller's name just before the Recovery gadget
+# binds to it, so a board can first wait until its USB PHY is ready.
+recovery_board_usb_ready() {
+    :
+}
+
 # A board without a Recovery web page, for example without Ethernet, sets
 # ONEKVM_RECOVERY_WEB=0: Recovery then offers USB storage and the consoles.
 recovery_web_enabled() {
@@ -379,7 +391,7 @@ recovery_start_gadget() {
     mkdir strings/0x409 || recovery_die "cannot create USB identity"
     printf '%s\n' 'OneKVM-Recovery' >strings/0x409/serialnumber
     printf '%s\n' 'OneKVM' >strings/0x409/manufacturer
-    printf '%s\n' 'OneKVM NanoKVM Recovery' >strings/0x409/product
+    printf '%s\n' "${ONEKVM_RECOVERY_USB_PRODUCT:-OneKVM NanoKVM Recovery}" >strings/0x409/product
 
     mkdir configs/c.1 configs/c.1/strings/0x409 || \
         recovery_die "cannot create USB configuration"
@@ -414,6 +426,7 @@ recovery_start_gadget() {
     fi
 
     udc=$(recovery_wait_for_udc) || recovery_die "USB device controller not found"
+    recovery_board_usb_ready "$udc"
     printf '%s\n' "$udc" >UDC || recovery_die "cannot bind USB gadget"
 }
 
@@ -466,6 +479,7 @@ recovery_publish_network() {
                 printf '%s' "$cur" >/dev/kmsg
                 printf '%s' "$cur" >"/dev/$console_tty" 2>/dev/null || true
                 printf '%s' "$cur" >/etc/issue
+                recovery_board_addresses "$cur"
             }
             last=$cur
             if [ "$panel" = fb_jd9853 ] && [ -z "$panel_pid" ]; then

@@ -2,7 +2,7 @@
 
 [English](README.md) | 简体中文
 
-OneKVM 面向 NanoKVM Cube/PCIe、Pro（SD/eMMC）和 Go 的 USB 恢复和恢复出厂设置支持，包括 initramfs recovery
+OneKVM 面向 NanoKVM Cube/PCIe、Pro（SD/eMMC）、Go 和 PicoKVM 的 USB 恢复和恢复出厂设置支持，包括 initramfs recovery
 hook、运行时标记命令、恢复控制台、输入辅助程序、systemd 集成，以及监听
 80/443 的恢复网页。
 
@@ -53,6 +53,17 @@ UART3 也提供同一控制台。Go 没有以太网，因此没有 Recovery 网�
 屏幕只显示 Recovery 提示。自行 source 本 hook 的 init 可以替换 Recovery 选定后执行的
 `recovery_board_enter`；没有 Recovery 网页的机型设置 `ONEKVM_RECOVERY_WEB=0`；
 对系统不会清零计数的启动（如 Go 的 NFS root）设置 `ONEKVM_RECOVERY_COUNT_BOOTS=0`。
+还可以替换 `recovery_board_addresses`：Recovery 地址变化时它收到控制台横幅；替换
+`recovery_board_usb_ready`：gadget 绑定 USB 设备控制器前它收到控制器名称；设置
+`ONEKVM_RECOVERY_USB_PRODUCT` 可按机型命名 gadget。
+
+PicoKVM 也在自己的 initramfs 中运行本 hook：在系统设置中点 Recovery、以
+`onekvm_recovery=1` 启动，或连续 10 次未正常启动都会进入（没有 Linux 能读取的按键）。
+Recovery 把整张 SD 卡连同 ACM 控制台导出，可直接写入完整的 `onekvm-picokvm-sd.img`；
+ttyS0 也提供同一控制台，屏幕显示 Recovery 地址。PicoKVM 有以太网，启动 FAT 上的
+`recovery.zip` 提供 Recovery 网页；PicoKVM 没有 `.fwup`，zip 不带离线 RAUC 工具，
+此时 `/status` 返回 `"firmware": false`，网页不提供固件上传。恢复出厂设置把 PicoKVM 的
+userdata 格式化为 ext4，即其 initramfs 挂载的文件系统。
 
 OneKVM 生成的 `.img` 尾部带 512 字节 metadata/hash trailer。Recovery 在读取完整
 镜像时核对 profile、SD/eMMC 类型、payload 长度以及两个 SHA-256；缺少 trailer
