@@ -270,6 +270,11 @@ long recovery_firmware_limit(void)
 	return (long)available;
 }
 
+int recovery_firmware_supported(void)
+{
+	return access("/usr/bin/rauc", X_OK) == 0;
+}
+
 static int read_sysfs_line(const char *path, char *out, size_t size)
 {
 	FILE *file;
@@ -410,8 +415,9 @@ int recovery_status_json(char *out, size_t size)
 	}
     struct network_display network = network_display_read();
 	n = snprintf(out + used, size - used,
-		     "],\"firmwareMax\":%ld,\"storageType\":\"%s\",\"storageBytes\":%lld,\"networkSource\":\"%s\",\"ipv4Mode\":\"%s\"}\n",
-		     firmware_max, storage_type, storage_bytes, network.source, network.mode);
+		     "],\"firmware\":%s,\"firmwareMax\":%ld,\"storageType\":\"%s\",\"storageBytes\":%lld,\"networkSource\":\"%s\",\"ipv4Mode\":\"%s\"}\n",
+		     recovery_firmware_supported() ? "true" : "false", firmware_max, storage_type,
+		     storage_bytes, network.source, network.mode);
 	if (n < 0 || (size_t)n >= size - used)
 		return -1;
 	return 0;
