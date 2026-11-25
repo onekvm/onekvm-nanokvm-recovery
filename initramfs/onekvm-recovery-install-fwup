@@ -23,6 +23,24 @@ onekvm_read_le64() {
 onekvm_read_hex() {
     od -An -tx1 -j "$2" -N"$3" "$1" | tr -d ' \n'
 }
+# Bytes used by the SquashFS or EROFS root image at OFFSET of FILE; images stay
+# below 4 GiB. SquashFS: bytes_used (le64 at +40). EROFS: blocks_lo (le32 at
+# superblock +36) << blkszbits (u8 at +12), superblock at +1024, no 48-bit
+# block counts.
+onekvm_root_image_bytes() {
+    if [ "$(onekvm_read_hex "$1" "$2" 4)" = 68737173 ]; then
+        [ "$(onekvm_read_le32 "$1" $(($2 + 44)))" = 0 ] || return 1
+        onekvm_read_le32 "$1" $(($2 + 40))
+        return
+    fi
+    [ "$(onekvm_read_hex "$1" $(($2 + 1024)) 4)" = e2e1f5e0 ] || return 1
+    [ $(( $(onekvm_read_le32 "$1" $(($2 + 1104))) & 128 )) -eq 0 ] || return 1
+    bits=$(od -An -tu1 -j $(($2 + 1036)) -N1 "$1" | tr -d ' \n')
+    blocks=$(onekvm_read_le32 "$1" $(($2 + 1060))) || return 1
+    [ "$bits" -ge 9 ] && [ "$bits" -le 16 ] || return 1
+    [ "$blocks" -lt $((1 << (32 - bits))) ] || return 1
+    echo $((blocks << bits))
+}
 onekvm_hash() {
     "${ONEKVM_RECOVERY_SHA256:-/usr/sbin/onekvm-recovery-sha256}" "$@"
 }
@@ -89,9 +107,9 @@ onekvm_detect_bundle() {
        [ "$(od -An -tu1 -j $(( $(stat -c %s "$1") - 512 + 20 )) -N1 "$1" | tr -d ' \n')" = 3 ]; then
         echo emmc-image; return
     fi
-    if [ "$(stat -c %s "$1")" -gt 291242032 ]; then
-        magic=$(od -An -tx1 -j291241984 -N4 "$1" | tr -d ' \n')
-        if [ "$magic" = 68737173 ]; then echo emmc-image; return; fi
+    if [ "$(stat -c %s "$1")" -gt $((291241984 + 1152)) ] &&
+       onekvm_root_image_bytes "$1" 291241984 >/dev/null 2>&1; then
+        echo emmc-image; return
     fi
     echo 'firmware is not a supported OneKVM bundle or image' >&2
     return 1
@@ -275,10 +293,7 @@ install_image() {
         *) exit 1 ;;
     esac
     root_offset=$((root_lba * 512))
-    magic=$(od -An -tx1 -j "$root_offset" -N4 "$bundle" | tr -d ' \n')
-    [ "$magic" = 68737173 ]
-    [ "$(onekvm_read_le32 "$bundle" $((root_offset + 44)))" = 0 ]
-    total=$(onekvm_read_le32 "$bundle" $((root_offset + 40)))
+    total=$(onekvm_root_image_bytes "$bundle" "$root_offset")
     [ "$total" -ge 65536 ] && [ "$total" -le "$((root_sectors * 512))" ]
     expected=$(/usr/sbin/onekvm-recovery-sha256 --skip "$root_offset" --bytes "$total" "$bundle")
     mount -t vfat -o "loop,ro,offset=$((boot_lba * 512)),sizelimit=$((boot_sectors * 512))" "$bundle" "$img_fat"

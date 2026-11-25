@@ -57,7 +57,10 @@ It bounds copies to the root slot, re-hashes the written data, installs paired
 boot payloads, and activates last. Raw `.img` files require a trusted source
 and a published hash; they never rewrite the partition table or bootloader.
 Pro displays Recovery and its IP on the JD9853 screen; hold the rotary
-button (KEY_ENTER) at boot to enter. Storage follows the actual root device,
+button (KEY_ENTER) at boot to enter. Tap Reboot on the screen, or turn the
+knob to select it and press: the button turns into a red Confirm, and a second
+press within five seconds reboots. It is unavailable while firmware uploads
+or installs. Storage follows the actual root device,
 including when both SD and eMMC are present. SD exports whole-card USB mass
 storage plus ACM; Pro eMMC exposes ACM only. Pro SD still needs its temporary
 U-Boot entry; Recovery does not change or save the bootloader environment.

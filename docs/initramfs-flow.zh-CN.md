@@ -15,7 +15,7 @@
 - `/init.d/15-nanokvm-firstboot`：首次启动时建立或修复 A/B 与 userdata 布局。
 - `/init.d/20-recovery`：读取一次性启动模式，处理 factory reset 或接管 Recovery。
 - `/init.d/89-partlabel`：解析 `PARTLABEL=` 参数。
-- `/init.d/90-rootfs`：挂载所选只读 SquashFS 根分区。
+- `/init.d/90-rootfs`：挂载所选只读根分区（SquashFS 或 EROFS）。
 - `/init.d/91-overlayroot`：挂载 userdata，建立 overlay 并 `switch_root`。
 
 Recovery 的体积较大的部分不放入 A/B initramfs。网页、OpenSSL、校验和工具、固件安装脚本、
@@ -105,7 +105,7 @@ OpenEmbedded 的 `initramfs-framework` `/init` 依次完成：
        -> recovery：消费模式，加载 recovery.zip，停留在 initramfs
        -> 无模式：追加启动次数；第 10 次进入 Recovery，否则返回正常启动流程
   -> 89-partlabel
-  -> 90-rootfs（挂载当前 A/B SquashFS）
+  -> 90-rootfs（挂载当前 A/B 根，SquashFS 或 EROFS）
   -> 91-overlayroot（挂载 userdata 并 switch_root）
 ```
 
@@ -274,7 +274,7 @@ DHCP bound/renew/deconfig 保留备用地址与手动 DNS，共用锁和代际�
 ```sh
 onekvm-recovery-network status
 onekvm-recovery-network dhcp
-onekvm-recovery-network static 10.100.99.107/24 10.100.99.1
+onekvm-recovery-network static <设备 IP>/24 <网关 IP>
 onekvm-recovery-network fallback 192.168.233.10/24
 ```
 
