@@ -1,4 +1,4 @@
-# onekvm-nanokvm-recovery
+# onekvm-recovery
 
 English | [简体中文](README.zh-CN.md)
 
