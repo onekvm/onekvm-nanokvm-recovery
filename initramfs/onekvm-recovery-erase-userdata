@@ -44,10 +44,17 @@ umount "$boot" || { echo "cannot unmount boot partition" >&2; exit 1; }
 rmdir "$boot" 2>/dev/null || true
 
 # Same partition and size. Factory reset is the only path that replaces
-# an existing filesystem, and the replacement is f2fs. Boot still mounts
-# ext4 when this script has not run.
-mkfs.f2fs -f -l userdata \
-    -U "$userdata_uuid" \
-    "$userdata" >/dev/null
+# an existing filesystem, and the replacement is f2fs; PicoKVM boots only
+# from ext4 userdata, created as its initramfs does. Boot still mounts ext4
+# when this script has not run.
+case "${userdata_fs:-f2fs}" in
+    ext4)
+        mkfs.ext4 -q -F -L userdata -U "$userdata_uuid" -m 0 \
+            -E lazy_itable_init=1,lazy_journal_init=1 "$userdata" ;;
+    *)
+        mkfs.f2fs -f -l userdata \
+            -U "$userdata_uuid" \
+            "$userdata" >/dev/null ;;
+esac
 sync
 echo "userdata erased"

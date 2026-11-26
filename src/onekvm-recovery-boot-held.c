@@ -7,8 +7,19 @@
 #include <sys/ioctl.h>
 #include <unistd.h>
 
-#define BOOT_CHIP_LABEL "3020000.gpio"
-#define BOOT_OFFSET 30U
+/*
+ * Active-low BOOT buttons read through a GPIO chip. An entry with a machine
+ * applies only when the device tree names it: other AX620E boards have the
+ * same chip, with other uses for the line.
+ */
+static const struct boot_gpio {
+	const char *chip;
+	unsigned int offset;
+	const char *machine;
+} boot_gpios[] = {
+	{ "3020000.gpio", 30U, NULL },			/* NanoKVM Cube/PCIe */
+	{ "6001000.gpio", 2U, "sipeed,nanokvm-go" },	/* NanoKVM Go GPIO3_A2 */
+};
 #define SAMPLES 3
 #define SAMPLE_US 80000
 #define PROBE_ATTEMPTS 15
@@ -69,6 +80,37 @@ static int evdev_boot_held(void)
 	return held;
 }
 
+static int machine_is(const char *compatible)
+{
+	char list[512];
+	ssize_t length;
+	size_t at;
+	int fd = open("/proc/device-tree/compatible", O_RDONLY | O_CLOEXEC);
+
+	if (fd < 0)
+		return 0;
+	length = read(fd, list, sizeof(list) - 1);
+	close(fd);
+	if (length <= 0)
+		return 0;
+	list[length] = '\0';
+	for (at = 0; at < (size_t)length; at += strlen(list + at) + 1)
+		if (!strcmp(list + at, compatible))
+			return 1;
+	return 0;
+}
+
+static const struct boot_gpio *boot_gpio_for(const char *chip)
+{
+	size_t i;
+
+	for (i = 0; i < sizeof(boot_gpios) / sizeof(boot_gpios[0]); i++)
+		if (!strcmp(boot_gpios[i].chip, chip) &&
+		    (!boot_gpios[i].machine || machine_is(boot_gpios[i].machine)))
+			return &boot_gpios[i];
+	return NULL;
+}
+
 static int gpiochip_boot_held(void)
 {
 	DIR *dir;
@@ -84,6 +126,7 @@ static int gpiochip_boot_held(void)
 		struct gpiochip_info info;
 		struct gpio_v2_line_request req;
 		struct gpio_v2_line_values values;
+		const struct boot_gpio *boot;
 		int fd;
 
 		if (strncmp(entry->d_name, "gpiochip", 8) != 0)
@@ -95,17 +138,17 @@ static int gpiochip_boot_held(void)
 			continue;
 		memset(&info, 0, sizeof(info));
 		if (ioctl(fd, GPIO_GET_CHIPINFO_IOCTL, &info) < 0 ||
-		    strcmp(info.label, BOOT_CHIP_LABEL) != 0) {
+		    !(boot = boot_gpio_for(info.label))) {
 			close(fd);
 			continue;
 		}
 		found = 1;
-		if (BOOT_OFFSET >= info.lines) {
+		if (boot->offset >= info.lines) {
 			close(fd);
 			break;
 		}
 		memset(&req, 0, sizeof(req));
-		req.offsets[0] = BOOT_OFFSET;
+		req.offsets[0] = boot->offset;
 		req.num_lines = 1;
 		req.config.flags = GPIO_V2_LINE_FLAG_INPUT | GPIO_V2_LINE_FLAG_ACTIVE_LOW;
 		strncpy(req.consumer, "onekvm-boot", sizeof(req.consumer) - 1);

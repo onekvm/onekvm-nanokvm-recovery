@@ -593,6 +593,12 @@ static void handle_firmware(struct conn *conn, long length)
 	char buffer[16384];
 	char *install_argv[] = { INSTALL_FWUP, (char *)firmware_path, NULL };
 
+	if (!recovery_firmware_supported()) {
+		drain_body(conn, length > 0 ? length : 0);
+		write_progress_error("firmware install is not available on this device");
+		send_text(conn, 400, "Bad Request", "firmware install is not available on this device\n");
+		return;
+	}
 	limit = recovery_firmware_limit();
 	if (length <= 0 || limit <= 0 || length > limit) {
 		drain_body(conn, length > 0 ? length : 0);

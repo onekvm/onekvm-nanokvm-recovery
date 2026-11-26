@@ -16,6 +16,8 @@ struct recovery_addrs {
 
 int recovery_collect_ipv4(struct recovery_addrs *addrs);
 long recovery_firmware_limit(void);
+/* Firmware files install only when recovery.zip carries the offline RAUC tools. */
+int recovery_firmware_supported(void);
 int recovery_status_json(char *out, size_t size);
 int recovery_format_banner(char *out, size_t size);
 int recovery_oled_geometry(int *width, int *pages);
